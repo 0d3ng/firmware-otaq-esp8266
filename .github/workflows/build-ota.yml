@@ -1,4 +1,4 @@
-name: ESP-IDF Build & Secure OTA (ECDSA 256)
+name: ESP-IDF Build & Secure OTA (ECDSA 384)
 
 on:
   pull_request:
@@ -41,7 +41,7 @@ jobs:
           BUILD_NUMBER=${GITHUB_RUN_NUMBER}
           FIRMWARE_VERSION="${GIT_HASH}-${BUILD_DATE}-build${BUILD_NUMBER}"
           echo "FIRMWARE_VERSION=${FIRMWARE_VERSION}" >> $GITHUB_ENV
-          echo "FIRMWARE_ALGORITHM=ECDSA256" >> $GITHUB_ENV
+          echo "FIRMWARE_ALGORITHM=ECDSA384" >> $GITHUB_ENV
           echo "Firmware version: ${FIRMWARE_VERSION}"
           echo "Firmware algorithm: ${FIRMWARE_ALGORITHM}"
 
@@ -74,7 +74,7 @@ jobs:
       - name: Create manifest.json & package using ECDSA
         id: sign_package
         env:
-          ECDSA_PRIVATE_KEY_PEM: ${{ secrets.ECDSA_256_PRIVATE_KEY_PEM }}
+          ECDSA_PRIVATE_KEY_PEM: ${{ secrets.ECDSA_384_PRIVATE_KEY_PEM }}
           VERSION: ${{ env.FIRMWARE_VERSION }} # or any other versioning scheme
         run: |
           # measure entire step (python + zip)
@@ -93,8 +93,8 @@ jobs:
           fw_file = "build/firmware-otaq.bin"
           with open(fw_file, "rb") as f:
               data = f.read()
-          digest = hashlib.sha256(data).digest()
-          print(f"Firmware {fw_file} size={len(data)} sha256={digest.hex()}")
+          digest = hashlib.sha384(data).digest()
+          print(f"Firmware {fw_file} size={len(data)} sha384={digest.hex()}")
 
           # Load private key from GitHub Secrets (PEM string)
           private_key_pem = os.environ.get("ECDSA_PRIVATE_KEY_PEM","").strip()
@@ -111,7 +111,7 @@ jobs:
 
           # time the signing (hashing already done above)
           t0 = time.perf_counter()
-          signature = private_key.sign(data, ec.ECDSA(hashes.SHA256()))
+          signature = private_key.sign(data, ec.ECDSA(hashes.SHA384()))
           t1 = time.perf_counter()
           signing_ms = (t1 - t0) * 1000.0
 
