@@ -8,46 +8,33 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "mbedtls/ecdsa.h"
-#include "mbedtls/pk.h"
-#include "mbedtls/md.h"
+#include "monocypher-ed25519.h"
 #include "cJSON.h"
 #include "mbedtls/sha256.h"
-#include "mbedtls/error.h"
 #include "../miniz/miniz.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include "certs/isrgrootx1.h"
-#include "certs/fullchain.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "mqtt_app.h"
 #include "ota_control.h"
-#include "certs/pub_ecdsa.h"
+#include "certs/fullchain.h"
 
 // polinema server https
 #define OTA_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware.zip"
 // polinema server
-// #define OTA_URL "http://103.172.249.254:8000/api/v1/firmware/firmware.zip"
-// cloudflared server
-// #define OTA_URL "https://fastapi.sinaungoding.com/api/v1/firmware/firmware.zip"
-// apatos server
-// #define OTA_URL "http://192.168.10.102:8000/api/v1/firmware/firmware.zip"
-// local lab server
-// #define OTA_URL "http://192.168.137.1:8000/api/v1/firmware/firmware.zip"
+// #define OTA_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/firmware.zip"
 #define TAG "OTA_SECURE"
 #define MAX_MANIFEST_SIZE 4096
-
-#define HASH_LEN_BYTES 32
-#define HASH_HEX_LEN (HASH_LEN_BYTES * 2)
-#define HASH_HEX_BUF (HASH_HEX_LEN + 1)
-
-#define SIG_BUF_LEN 145
+#define SIG_LEN 64
 
 #define UPDATE_ZIP_PATH "/spiffs/update.zip"
 #define FIRMWARE_ENTRY_NAME "firmware-otaq.bin" // sesuai zipmu
+
+// ba89c973ffb9836d7c3c9f0b6bc869455cdb6db33aa299c297fd1726f567abd9 -> private key
+static const uint8_t PUBLIC_KEY[32] = {0x0B, 0xC1, 0x2F, 0x3D, 0x71, 0x82, 0x04, 0x68, 0x6B, 0x66, 0x90, 0x42, 0xD9, 0x21, 0xC9, 0x1D, 0xB1, 0x2F, 0x83, 0x34, 0x0E, 0x80, 0xC4, 0x83, 0x78, 0x92, 0x82, 0x80, 0x51, 0xFA, 0xFC, 0xD8};
 
 static volatile bool ota_flag = false;
 static uint64_t stage_start_time = 0;
@@ -171,10 +158,15 @@ void mount_spiffs()
 static bool download_zip_to_spiffs(const char *url)
 {
     esp_http_client_config_t config = {
+    #if FIRMWARE_TLS == 1
         .url = url,
         .cert_pem = fullchain_pem,
         .skip_cert_common_name_check = false,
-        .timeout_ms = 30000};
+    #else
+        .url = url,
+    #endif
+        .timeout_ms = 30000
+    };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client)
@@ -428,20 +420,21 @@ static int compare_firmware_versions(const char *cur_ver, const char *new_ver)
 }
 
 /* ---------------- helper: hex -> bytes ---------------- */
-int hexstr_to_bytes(const char *hex, uint8_t *out, size_t out_len)
+static bool hexstr_to_bytes(const char *hex, uint8_t *out, size_t out_len)
 {
     size_t hlen = strlen(hex);
-    if (hlen % 2 != 0 || out_len < hlen / 2)
-        return -1;
-
+    if (hlen % 2 != 0)
+        return false;
+    if (out_len < hlen / 2)
+        return false;
     for (size_t i = 0; i < hlen / 2; ++i)
     {
         unsigned int v;
         if (sscanf(hex + i * 2, "%2x", &v) != 1)
-            return -2;
+            return false;
         out[i] = (uint8_t)v;
     }
-    return (int)(hlen / 2); // return actual length
+    return true;
 }
 
 /* ---------------- Callback state for miniz extraction -> OTA ----------------
@@ -467,7 +460,7 @@ static size_t mz_to_ota_callback(void *pOpaque, mz_uint64 file_ofs, const void *
     if (!st || st->error)
         return 0;
 
-    // update SHA256
+    // update SHA
     mbedtls_sha256_update(&st->sha_ctx, (const unsigned char *)pBuf, n);
 
     // write to OTA
@@ -571,8 +564,8 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
     ESP_LOGI(TAG, "[ZIP] manifest extracted (%d bytes):\n%s", (int)manifest_len, manifest);
 
     // parse manifest
-    char expected_hash_hex[HASH_HEX_BUF];
-    char signature_hex[SIG_BUF_LEN];
+    char expected_hash_hex[65];
+    char signature_hex[129];
     char new_version[64];
     if (!parse_manifest(manifest, expected_hash_hex, sizeof(expected_hash_hex),
                         signature_hex, sizeof(signature_hex),
@@ -587,6 +580,7 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
     ESP_LOGI(TAG, "[OTA] signature hex: %s", signature_hex);
     ESP_LOGI(TAG, "[OTA] new version: %s", new_version);
     ESP_LOGI(TAG, "[OTA] current version: %s", FIRMWARE_VERSION);
+    ESP_LOGI(TAG, "[OTA] signature algorithm: %s", FIRMWARE_ALGORITHM);
 
     // Compare versions using compare_firmware_versions helper
     ota_monitor_start_stage();
@@ -669,7 +663,8 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
 
     // init SHA
     mbedtls_sha256_init(&cb_state.sha_ctx);
-    mbedtls_sha256_starts(&cb_state.sha_ctx, 0); // use SHA-256
+    mbedtls_sha256_starts(&cb_state.sha_ctx, 0);
+
     // 4) extract firmware with callback (streaming -> OTA)
     ESP_LOGI(TAG, "[ZIP] Start streaming firmware from zip to OTA (callback)");
     if (!mz_zip_reader_extract_to_callback(&zip, fw_index, mz_to_ota_callback, &cb_state, 0))
@@ -679,7 +674,7 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
     }
 
     // finish SHA
-    uint8_t calc_hash[HASH_LEN_BYTES];
+    uint8_t calc_hash[32];
     mbedtls_sha256_finish(&cb_state.sha_ctx, calc_hash);
     mbedtls_sha256_free(&cb_state.sha_ctx);
 
@@ -699,10 +694,10 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
 
     // 5) compare hash (calc_hash) with expected_hash_hex
     ota_monitor_start_stage();
-    char calc_hash_hex[HASH_HEX_BUF];
-    for (int i = 0; i < HASH_LEN_BYTES; ++i)
+    char calc_hash_hex[65];
+    for (int i = 0; i < 32; ++i)
         sprintf(calc_hash_hex + i * 2, "%02x", calc_hash[i]);
-    calc_hash_hex[HASH_HEX_LEN] = '\0';
+    calc_hash_hex[64] = '\0';
     ESP_LOGI(TAG, "[OTA] computed hash: %s", calc_hash_hex);
 
     if (strcmp(calc_hash_hex, expected_hash_hex) != 0)
@@ -717,48 +712,25 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
 
     // 6) verify signature: signature is hex in manifest -> bytes
     ota_monitor_start_stage();
-    uint8_t signature[SIG_BUF_LEN];
-    int sig_len = hexstr_to_bytes(signature_hex, signature, sizeof(signature));
-    if (sig_len < 0)
+    uint8_t signature[SIG_LEN];
+    if (!hexstr_to_bytes(signature_hex, signature, SIG_LEN))
     {
-        ESP_LOGE(TAG, "[OTA] Signature hex->bytes conversion failed: %d", sig_len);
+        ESP_LOGE(TAG, "[OTA] Signature hex->bytes conversion failed");
         esp_ota_end(ota_handle);
         free(manifest);
         return false;
     }
-    // ESP_LOG_BUFFER_HEX(TAG, signature, sig_len);
     ota_monitor_end_stage("hexstr_to_bytes");
 
-    // verify ECDSA over the 32-byte hash
+    // verify ed25519 over the 32-byte hash
     ota_monitor_start_stage();
-    mbedtls_pk_context pk;
-    mbedtls_pk_init(&pk);
-
-    int ret = mbedtls_pk_parse_public_key(&pk, PUBLIC_KEY_PEM_P256, sizeof(PUBLIC_KEY_PEM_P256));
-    if (ret != 0)
+    if (crypto_ed25519_check(signature, PUBLIC_KEY, calc_hash, 32) != 0)
     {
-        ESP_LOGE(TAG, "[OTA] Failed to parse public key: -0x%04X", -ret);
+        ESP_LOGE(TAG, "[OTA] Signature verification FAILED");
         esp_ota_end(ota_handle);
         free(manifest);
         return false;
     }
-
-    ESP_LOGI(TAG, "[OTA] pk type: %d", mbedtls_pk_get_type(&pk));
-    ESP_LOGI(TAG, "[OTA] Signature length: %d", sig_len);
-    ESP_LOGI(TAG, "[OTA] Hash length: %d", (int)sizeof(calc_hash));
-    // ESP_LOG_BUFFER_HEX(TAG, calc_hash, sizeof(calc_hash));
-    ret = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, calc_hash, 0, signature, sig_len);
-    if (ret != 0)
-    {
-        char err_buf[200];
-        mbedtls_strerror(ret, err_buf, sizeof(err_buf));
-        ESP_LOGE(TAG, "[OTA] Signature verification FAILED: -0x%04X (%d): %s", -ret, ret, err_buf);
-        esp_ota_end(ota_handle);
-        free(manifest);
-        return false;
-    }
-
-    mbedtls_pk_free(&pk);
     ota_monitor_end_stage("verify_signature");
     ESP_LOGI(TAG, "[OTA] Hash and signature verified OK");
 
