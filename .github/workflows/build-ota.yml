@@ -1,15 +1,16 @@
 name: ESP-IDF Build & Secure OTA (ECDSA 384)
 
 on:
-  pull_request:
-    branches:
-      - master
-      - development
-    types: [closed]
+  workflow_dispatch:
+    inputs:
+      padding_mb:
+        description: "Size padding on MB (0 = without padding, 1 = 1MB padding, 2 = 2MB padding, 4 = 4MB padding, etc.)"
+        required: true
+        default: "0"
 
 jobs:
   build-ota:
-    if: github.event.pull_request.merged == true
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: firmware env
 
@@ -63,6 +64,32 @@ jobs:
 
           echo "=== Step 5: copy firmware-otaq.bin ==="
           cp build/firmware-otaq-s3.bin build/firmware-otaq.bin
+
+      - name: Apply firmware padding
+        run: |
+          PADDING_MB=${{ github.event.inputs.padding_mb }}
+          FW="build/firmware-otaq.bin"
+
+          echo "Requested padding: ${PADDING_MB} MB"
+
+          if [ -z "$PADDING_MB" ]; then
+            echo "No padding input. Using default 0."
+            PADDING_MB=0
+          fi
+
+          if [ "$PADDING_MB" -eq 0 ]; then
+            echo "No padding applied."
+          else
+            ORIG_SIZE=$(stat -c%s "$FW")
+            NEW_SIZE=$(( ORIG_SIZE + PADDING_MB*1024*1024 ))
+            echo "Original size: $ORIG_SIZE bytes"
+            echo "New target size: $NEW_SIZE bytes"
+
+            truncate -s $NEW_SIZE "$FW"
+
+            echo "Final size:"
+            stat -c%s "$FW"
+          fi   
 
       - name: Upload build logs
         if: failure()
