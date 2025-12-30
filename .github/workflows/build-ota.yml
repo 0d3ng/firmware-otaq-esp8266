@@ -41,7 +41,7 @@ jobs:
           BUILD_NUMBER=${GITHUB_RUN_NUMBER}
           FIRMWARE_VERSION="${GIT_HASH}-${BUILD_DATE}-build${BUILD_NUMBER}"
           echo "FIRMWARE_VERSION=${FIRMWARE_VERSION}" >> $GITHUB_ENV
-          echo "FIRMWARE_ALGORITHM=ECDSA256" >> $GITHUB_ENV
+          echo "FIRMWARE_ALGORITHM=ED25519" >> $GITHUB_ENV
           echo "Firmware version: ${FIRMWARE_VERSION}"
           echo "Firmware algorithm: ${FIRMWARE_ALGORITHM}"
 
