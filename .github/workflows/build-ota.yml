@@ -41,7 +41,9 @@ jobs:
           BUILD_NUMBER=${GITHUB_RUN_NUMBER}
           FIRMWARE_VERSION="${GIT_HASH}-${BUILD_DATE}-build${BUILD_NUMBER}"
           echo "FIRMWARE_VERSION=${FIRMWARE_VERSION}" >> $GITHUB_ENV
+          echo "FIRMWARE_ALGORITHM=ECDSA256" >> $GITHUB_ENV
           echo "Firmware version: ${FIRMWARE_VERSION}"
+          echo "Firmware algorithm: ${FIRMWARE_ALGORITHM}"
 
       - name: Build firmware
         run: |
@@ -59,9 +61,8 @@ jobs:
           echo "=== Step 4: Build firmware ==="
           idf.py build -D FIRMWARE_VERSION="${{ env.FIRMWARE_VERSION }}" -D FIRMWARE_ALGORITHM="${{ env.FIRMWARE_ALGORITHM }}"
 
-          echo "=== Step 5: Check sdkconfig.h after build ==="
-          grep FREERTOS_USE_TRACE_FACILITY build/config/sdkconfig.h || echo "TRACE_FACILITY not found"
-          grep FREERTOS_USE_STATS_FORMATTING_FUNCTIONS build/config/sdkconfig.h || echo "STATS_FUNCTIONS not found"
+          echo "=== Step 5: copy firmware-otaq.bin ==="
+          cp build/firmware-otaq-s3.bin build/firmware-otaq.bin
 
       - name: Upload build logs
         if: failure()
