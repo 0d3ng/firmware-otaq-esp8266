@@ -41,8 +41,13 @@ jobs:
           BUILD_DATE=$(date "+%Y%m%dT%H%M")
           BUILD_NUMBER=${GITHUB_RUN_NUMBER}
           FIRMWARE_VERSION="${GIT_HASH}-${BUILD_DATE}-build${BUILD_NUMBER}"
+          PADDING_MB="${{ github.event.inputs.padding_mb }}"
+          if [ -z "$PADDING_MB" ]; then
+            PADDING_MB=0
+          fi
+          FIRMWARE_ALGORITHM="ED25519_${PADDING_MB}MB"
           echo "FIRMWARE_VERSION=${FIRMWARE_VERSION}" >> $GITHUB_ENV
-          echo "FIRMWARE_ALGORITHM=ED25519" >> $GITHUB_ENV
+          echo "FIRMWARE_ALGORITHM=${FIRMWARE_ALGORITHM}" >> $GITHUB_ENV
           echo "Firmware version: ${FIRMWARE_VERSION}"
           echo "Firmware algorithm: ${FIRMWARE_ALGORITHM}"
 
