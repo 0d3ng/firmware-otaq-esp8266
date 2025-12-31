@@ -137,7 +137,7 @@ void sensor_task(void *pvParameter)
         {
             energy_joule += power * delta_t;
         }
-        ESP_LOGI("POWER", "V=%.3f V  I=%.3f A  P=%.3f W  E=%.3f J", volt, current, power, energy_joule);
+        // ESP_LOGI("POWER", "V=%.3f V  I=%.3f A  P=%.3f W  E=%.3f J", volt, current, power, energy_joule);
         if (now_ms - last_publish_time_ms >= 2000)
         {
             time_t now;
