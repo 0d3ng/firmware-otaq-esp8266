@@ -158,13 +158,9 @@ void mount_spiffs()
 static bool download_zip_to_spiffs(const char *url)
 {
     esp_http_client_config_t config = {
-    #if FIRMWARE_TLS == 1
         .url = url,
         .cert_pem = fullchain_pem,
         .skip_cert_common_name_check = false,
-    #else
-        .url = url,
-    #endif
         .timeout_ms = 30000
     };
 
