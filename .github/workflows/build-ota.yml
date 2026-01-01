@@ -33,7 +33,7 @@ jobs:
         run: |
           git clone --depth 1 --branch v5.5.1 https://github.com/espressif/esp-idf.git $HOME/esp-idf
           cd $HOME/esp-idf
-          ./install.sh esp32
+          ./install.sh esp32s3
 
       - name: Set firmware version info
         run: |
