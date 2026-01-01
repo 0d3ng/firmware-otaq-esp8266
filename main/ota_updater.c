@@ -131,6 +131,27 @@ bool ota_triggered(void)
     return false;
 }
 
+static void remove_file_if_exists(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) == 0)
+    {
+        // File exists
+        if (remove(path) == 0)
+        {
+            ESP_LOGI(TAG, "File %s deleted successfully.", path);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Failed to delete %s.", path);
+        }
+    }
+    else
+    {
+        ESP_LOGI(TAG, "File %s does not exist, no need to delete.", path);
+    }
+}
+
 /* ---------------- SPIFS mount ---------------- */
 void mount_spiffs()
 {
@@ -149,6 +170,9 @@ void mount_spiffs()
         size_t total = 0, used = 0;
         esp_spiffs_info(NULL, &total, &used);
         ESP_LOGI(TAG, "SPIFFS mounted. total: %d bytes, used: %d bytes", (int)total, (int)used);
+
+        // Clean up old update.zip if exists
+        remove_file_if_exists(UPDATE_ZIP_PATH);
     }
 }
 
@@ -161,8 +185,7 @@ static bool download_zip_to_spiffs(const char *url)
         .url = url,
         .cert_pem = fullchain_pem,
         .skip_cert_common_name_check = false,
-        .timeout_ms = 30000
-    };
+        .timeout_ms = 30000};
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client)
@@ -538,6 +561,8 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
     }
     /* Reset WDT before extracting manifest to heap (may allocate/copy several KB) */
     esp_task_wdt_reset();
+    ESP_LOGI(TAG, "[DEBUG] manifest_index=%d, uncomp_size=%llu", manifest_index, (unsigned long long)manifest_stat.m_uncomp_size);
+    ESP_LOGI(TAG, "[DEBUG] Free heap before extract: %u", esp_get_free_heap_size());
     void *manifest_heap = mz_zip_reader_extract_to_heap(&zip, manifest_index, NULL, 0);
     if (!manifest_heap)
     {
@@ -777,7 +802,7 @@ void ota_task(void *pvParameter)
         ESP_LOGI(TAG, "[OTA] Triggered");
 
         // Pause sensor task to reduce CPU load during OTA
-        ota_pause_sensors();
+        // ota_pause_sensors();
 
         // Download zip to SPIFFS
         ESP_LOGI(TAG, "[OTA] Downloading zip from %s ...", OTA_URL);
@@ -786,7 +811,7 @@ void ota_task(void *pvParameter)
         if (!download_zip_to_spiffs(OTA_URL))
         {
             ESP_LOGE(TAG, "[OTA] download_zip_to_spiffs failed");
-            ota_resume_sensors();
+            // ota_resume_sensors();
             continue;
         }
         esp_task_wdt_reset(); // Reset WDT after download
@@ -800,12 +825,12 @@ void ota_task(void *pvParameter)
             ESP_LOGE(TAG, "[OTA] extract_zip_and_flash_ota failed");
             // optionally delete update.zip to retry next time
             // remove(UPDATE_ZIP_PATH);
-            ota_resume_sensors();
+            // ota_resume_sensors();
             continue;
         }
 
         // Resume sensors if OTA flow returns (normally device will reboot on success)
-        ota_resume_sensors();
+        // ota_resume_sensors();
 
         // normally won't reach here because extract_zip_and_flash_ota reboots on success
         vTaskDelay(pdMS_TO_TICKS(1000));
