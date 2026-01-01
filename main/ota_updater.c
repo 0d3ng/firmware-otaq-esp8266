@@ -563,25 +563,45 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
     esp_task_wdt_reset();
     ESP_LOGI(TAG, "[DEBUG] manifest_index=%d, uncomp_size=%llu", manifest_index, (unsigned long long)manifest_stat.m_uncomp_size);
     ESP_LOGI(TAG, "[DEBUG] Free heap before extract: %u", esp_get_free_heap_size());
-    void *manifest_heap = mz_zip_reader_extract_to_heap(&zip, manifest_index, NULL, 0);
-    if (!manifest_heap)
-    {
-        ESP_LOGE(TAG, "[ZIP] extract manifest to heap failed");
-        mz_zip_reader_end(&zip);
-        return false;
-    }
+    // void *manifest_heap = mz_zip_reader_extract_to_heap(&zip, manifest_index, NULL, 0);
+    // if (!manifest_heap)
+    // {
+    //     ESP_LOGE(TAG, "[ZIP] extract manifest to heap failed");
+    //     mz_zip_reader_end(&zip);
+    //     return false;
+    // }
+    // size_t manifest_len = (size_t)manifest_stat.m_uncomp_size;
+    // char *manifest = malloc(manifest_len + 1);
+    // if (!manifest)
+    // {
+    //     ESP_LOGE(TAG, "[ZIP] malloc manifest failed");
+    //     mz_free(manifest_heap);
+    //     mz_zip_reader_end(&zip);
+    //     return false;
+    // }
+    // memcpy(manifest, manifest_heap, manifest_len);
+    // manifest[manifest_len] = '\0';
+    // mz_free(manifest_heap);
+    // ESP_LOGI(TAG, "[ZIP] manifest extracted (%d bytes):\n%s", (int)manifest_len, manifest);
+
     size_t manifest_len = (size_t)manifest_stat.m_uncomp_size;
-    char *manifest = malloc(manifest_len + 1);
+    /* Allocate INTERNAL RAM explicitly */
+    char *manifest = heap_caps_malloc(manifest_len + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!manifest)
     {
-        ESP_LOGE(TAG, "[ZIP] malloc manifest failed");
-        mz_free(manifest_heap);
+        ESP_LOGE(TAG, "[ZIP] heap_caps_malloc manifest failed");
         mz_zip_reader_end(&zip);
         return false;
     }
-    memcpy(manifest, manifest_heap, manifest_len);
+    esp_task_wdt_reset();
+    if (!mz_zip_reader_extract_to_mem(&zip, manifest_index, manifest, manifest_len, 0))
+    {
+        ESP_LOGE(TAG, "[ZIP] extract manifest to mem failed");
+        heap_caps_free(manifest);
+        mz_zip_reader_end(&zip);
+        return false;
+    }
     manifest[manifest_len] = '\0';
-    mz_free(manifest_heap);
     ESP_LOGI(TAG, "[ZIP] manifest extracted (%d bytes):\n%s", (int)manifest_len, manifest);
 
     // parse manifest
