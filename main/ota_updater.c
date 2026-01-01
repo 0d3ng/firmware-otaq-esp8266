@@ -534,9 +534,7 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
     size_t zip_size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    uint8_t *zip_buf = heap_caps_malloc(
-        zip_size,
-        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint8_t *zip_buf = heap_caps_malloc(zip_size, MALLOC_CAP_8BIT);
     if (!zip_buf)
     {
         ESP_LOGE(TAG, "[ZIP] zip buffer malloc failed");
