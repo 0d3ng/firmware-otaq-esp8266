@@ -559,27 +559,35 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         mz_zip_reader_end(&zip);
         return false;
     }
-    /* Reset WDT before extracting manifest to heap (may allocate/copy several KB) */
-    esp_task_wdt_reset();
-    void *manifest_heap = mz_zip_reader_extract_to_heap(&zip, manifest_index, NULL, 0);
-    if (!manifest_heap)
-    {
-        ESP_LOGE(TAG, "[ZIP] extract manifest to heap failed");
-        mz_zip_reader_end(&zip);
-        return false;
-    }
+    
+    // Log heap sebelum ekstraksi untuk debugging
     size_t manifest_len = (size_t)manifest_stat.m_uncomp_size;
+    size_t free_heap = esp_get_free_heap_size();
+    size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "[ZIP] Before manifest extract: need=%u bytes, free_heap=%u, largest_block=%u",
+             (unsigned)manifest_len, (unsigned)free_heap, (unsigned)largest_block);
+    
+    /* Reset WDT before extracting manifest (may allocate/copy several KB) */
+    esp_task_wdt_reset();
+    
+    // Allocate buffer manual untuk kontrol lebih baik
     char *manifest = malloc(manifest_len + 1);
     if (!manifest)
     {
-        ESP_LOGE(TAG, "[ZIP] malloc manifest failed");
-        mz_free(manifest_heap);
+        ESP_LOGE(TAG, "[ZIP] malloc manifest buffer failed (need %u bytes)", (unsigned)(manifest_len + 1));
         mz_zip_reader_end(&zip);
         return false;
     }
-    memcpy(manifest, manifest_heap, manifest_len);
+    
+    // Extract langsung ke buffer kita (skip miniz internal allocation)
+    if (!mz_zip_reader_extract_to_mem(&zip, manifest_index, manifest, manifest_len, 0))
+    {
+        ESP_LOGE(TAG, "[ZIP] extract manifest to mem failed");
+        free(manifest);
+        mz_zip_reader_end(&zip);
+        return false;
+    }
     manifest[manifest_len] = '\0';
-    mz_free(manifest_heap);
     ESP_LOGI(TAG, "[ZIP] manifest extracted (%d bytes):\n%s", (int)manifest_len, manifest);
 
     // parse manifest
