@@ -286,29 +286,51 @@ static bool download_zip_to_spiffs(const char *url)
     }
 
     free(buffer);
-    
+
     // Flush dan sync file ke SPIFFS sebelum close (penting untuk ESP32-S3!)
     fflush(f);
     fsync(fileno(f));
     fclose(f);
-    
+
     esp_http_client_cleanup(client);
-    
+
     // Delay singkat untuk ensure SPIFFS cache fully flushed
     vTaskDelay(pdMS_TO_TICKS(100));
-    
+
     // Verify file bisa dibuka dan ukurannya sesuai
     struct stat st;
-    if (stat(UPDATE_ZIP_PATH, &st) != 0) {
+    if (stat(UPDATE_ZIP_PATH, &st) != 0)
+    {
         ESP_LOGE(TAG, "[HTTP] Failed to stat downloaded file");
         return false;
     }
     ESP_LOGI(TAG, "[HTTP] Downloaded file verified: %d bytes on disk", (int)st.st_size);
-    if (st.st_size != total_read) {
+    if (st.st_size != total_read)
+    {
         ESP_LOGE(TAG, "[HTTP] File size mismatch! Expected %d, got %d", total_read, (int)st.st_size);
         return false;
     }
-    
+
+    // WORKAROUND ESP32-S3: Unmount/remount SPIFFS untuk force cache clear
+    ESP_LOGI(TAG, "[HTTP] Unmounting SPIFFS to clear cache...");
+    esp_vfs_spiffs_unregister(NULL);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // Remount SPIFFS
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = "/spiffs",
+        .partition_label = NULL,
+        .max_files = 5,
+        .format_if_mount_failed = false // jangan format!
+    };
+    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "[HTTP] Failed to remount SPIFFS: %s", esp_err_to_name(ret));
+        return false;
+    }
+    ESP_LOGI(TAG, "[HTTP] SPIFFS remounted successfully");
+
     return true;
 }
 
@@ -543,11 +565,13 @@ static size_t mz_to_ota_callback(void *pOpaque, mz_uint64 file_ofs, const void *
 static bool extract_zip_and_flash_ota(const char *zip_path)
 {
     ota_monitor_start_stage();
-    mz_zip_archive zip;
-    memset(&zip, 0, sizeof(zip));
 
     /* Reset WDT before starting zip operations (may block on I/O) */
     esp_task_wdt_reset();
+
+    // Revert ke file-based karena tanpa PSRAM (load entire ZIP impossible)
+    mz_zip_archive zip;
+    memset(&zip, 0, sizeof(zip));
 
     if (!mz_zip_reader_init_file(&zip, zip_path, 0))
     {
@@ -580,17 +604,13 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         mz_zip_reader_end(&zip);
         return false;
     }
-    
-    // Log heap sebelum ekstraksi untuk debugging
+
     size_t manifest_len = (size_t)manifest_stat.m_uncomp_size;
-    size_t free_heap = esp_get_free_heap_size();
-    size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
-    ESP_LOGI(TAG, "[ZIP] Before manifest extract: need=%u bytes, free_heap=%u, largest_block=%u",
-             (unsigned)manifest_len, (unsigned)free_heap, (unsigned)largest_block);
-    
+    ESP_LOGI(TAG, "[ZIP] Extracting manifest (%u bytes)...", (unsigned)manifest_len);
+
     /* Reset WDT before extracting manifest (may allocate/copy several KB) */
     esp_task_wdt_reset();
-    
+
     // Allocate buffer manual untuk kontrol lebih baik
     char *manifest = malloc(manifest_len + 1);
     if (!manifest)
@@ -599,7 +619,7 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         mz_zip_reader_end(&zip);
         return false;
     }
-    
+
     // Extract langsung ke buffer kita (skip miniz internal allocation)
     if (!mz_zip_reader_extract_to_mem(&zip, manifest_index, manifest, manifest_len, 0))
     {
