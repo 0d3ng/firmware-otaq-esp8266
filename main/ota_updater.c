@@ -286,8 +286,29 @@ static bool download_zip_to_spiffs(const char *url)
     }
 
     free(buffer);
+    
+    // Flush dan sync file ke SPIFFS sebelum close (penting untuk ESP32-S3!)
+    fflush(f);
+    fsync(fileno(f));
     fclose(f);
+    
     esp_http_client_cleanup(client);
+    
+    // Delay singkat untuk ensure SPIFFS cache fully flushed
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // Verify file bisa dibuka dan ukurannya sesuai
+    struct stat st;
+    if (stat(UPDATE_ZIP_PATH, &st) != 0) {
+        ESP_LOGE(TAG, "[HTTP] Failed to stat downloaded file");
+        return false;
+    }
+    ESP_LOGI(TAG, "[HTTP] Downloaded file verified: %d bytes on disk", (int)st.st_size);
+    if (st.st_size != total_read) {
+        ESP_LOGE(TAG, "[HTTP] File size mismatch! Expected %d, got %d", total_read, (int)st.st_size);
+        return false;
+    }
+    
     return true;
 }
 
