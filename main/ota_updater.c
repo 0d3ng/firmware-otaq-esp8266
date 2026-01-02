@@ -172,7 +172,7 @@ void mount_spiffs()
         ESP_LOGI(TAG, "SPIFFS mounted. total: %d bytes, used: %d bytes", (int)total, (int)used);
 
         // Clean up old update.zip if exists
-        remove_file_if_exists(UPDATE_ZIP_PATH);
+        // remove_file_if_exists(UPDATE_ZIP_PATH);
     }
 }
 
@@ -522,53 +522,28 @@ static size_t mz_to_ota_callback(void *pOpaque, mz_uint64 file_ofs, const void *
 static bool extract_zip_and_flash_ota(const char *zip_path)
 {
     ota_monitor_start_stage();
-    /* ================= Load ZIP to RAM ================= */
-    FILE *f = fopen(zip_path, "rb");
-    if (!f)
-    {
-        ESP_LOGE(TAG, "[ZIP] fopen failed");
-        return false;
-    }
-
-    fseek(f, 0, SEEK_END);
-    size_t zip_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    uint8_t *zip_buf = heap_caps_malloc(zip_size, MALLOC_CAP_8BIT);
-    if (!zip_buf)
-    {
-        ESP_LOGE(TAG, "[ZIP] zip buffer malloc failed");
-        fclose(f);
-        return false;
-    }
-
-    fread(zip_buf, 1, zip_size, f);
-    fclose(f);
-
-    esp_task_wdt_reset();
-
     mz_zip_archive zip;
     memset(&zip, 0, sizeof(zip));
 
-    if (!mz_zip_reader_init_mem(&zip, zip_buf, zip_size, 0))
+    /* Reset WDT before starting zip operations (may block on I/O) */
+    esp_task_wdt_reset();
+
+    if (!mz_zip_reader_init_file(&zip, zip_path, 0))
     {
-        ESP_LOGE(TAG, "[ZIP] mz_zip_reader_init_mem failed");
-        heap_caps_free(zip_buf);
+        ESP_LOGE(TAG, "[ZIP] mz_zip_reader_init_file failed for %s", zip_path);
         return false;
     }
-
-    ESP_LOGI(TAG, "[ZIP] Opened %s (loaded to RAM)", zip_path);
+    ESP_LOGI(TAG, "[ZIP] Opened %s", zip_path);
 
     int num_files = (int)mz_zip_reader_get_num_files(&zip);
     ESP_LOGI(TAG, "[ZIP] entries: %d", num_files);
 
-    /* ================= Extract manifest.json ================= */
+    // 1) extract manifest.json to heap
     int manifest_index = mz_zip_reader_locate_file(&zip, "manifest.json", NULL, 0);
     if (manifest_index < 0)
     {
         ESP_LOGE(TAG, "[ZIP] manifest.json not found");
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     mz_zip_archive_file_stat manifest_stat;
@@ -576,38 +551,35 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
     {
         ESP_LOGE(TAG, "[ZIP] stat manifest failed");
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     if (manifest_stat.m_uncomp_size == 0 || manifest_stat.m_uncomp_size > MAX_MANIFEST_SIZE - 1)
     {
         ESP_LOGE(TAG, "[ZIP] manifest.json size invalid: %llu", (unsigned long long)manifest_stat.m_uncomp_size);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     /* Reset WDT before extracting manifest to heap (may allocate/copy several KB) */
     esp_task_wdt_reset();
+    void *manifest_heap = mz_zip_reader_extract_to_heap(&zip, manifest_index, NULL, 0);
+    if (!manifest_heap)
+    {
+        ESP_LOGE(TAG, "[ZIP] extract manifest to heap failed");
+        mz_zip_reader_end(&zip);
+        return false;
+    }
     size_t manifest_len = (size_t)manifest_stat.m_uncomp_size;
-    /* Allocate INTERNAL RAM explicitly */
-    char *manifest = heap_caps_malloc(manifest_len + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    char *manifest = malloc(manifest_len + 1);
     if (!manifest)
     {
-        ESP_LOGE(TAG, "[ZIP] heap_caps_malloc manifest failed");
+        ESP_LOGE(TAG, "[ZIP] malloc manifest failed");
+        mz_free(manifest_heap);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
-    esp_task_wdt_reset();
-    if (!mz_zip_reader_extract_to_mem(&zip, manifest_index, manifest, manifest_len, 0))
-    {
-        ESP_LOGE(TAG, "[ZIP] extract manifest to mem failed");
-        heap_caps_free(manifest);
-        mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
-        return false;
-    }
+    memcpy(manifest, manifest_heap, manifest_len);
     manifest[manifest_len] = '\0';
+    mz_free(manifest_heap);
     ESP_LOGI(TAG, "[ZIP] manifest extracted (%d bytes):\n%s", (int)manifest_len, manifest);
 
     // parse manifest
@@ -621,7 +593,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         ESP_LOGE(TAG, "[OTA] parse manifest failed");
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     ESP_LOGI(TAG, "[OTA] expected hash: %s", expected_hash_hex);
@@ -638,7 +609,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         ESP_LOGI(TAG, "[OTA] Current firmware is newer than candidate. Skipping update.");
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     else if (cmp == 0)
@@ -646,7 +616,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         ESP_LOGI(TAG, "[OTA] Current firmware version equals candidate. Skipping update.");
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     ESP_LOGI(TAG, "[OTA] Candidate firmware is newer. Proceeding with update.");
@@ -661,7 +630,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         ESP_LOGE(TAG, "[ZIP] firmware entry %s not found", FIRMWARE_ENTRY_NAME);
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     mz_zip_archive_file_stat fw_stat;
@@ -670,7 +638,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         ESP_LOGE(TAG, "[ZIP] stat firmware failed");
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     size_t fw_size = (size_t)fw_stat.m_uncomp_size;
@@ -680,7 +647,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         ESP_LOGE(TAG, "[ZIP] firmware size is zero");
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
 
@@ -691,7 +657,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         ESP_LOGE(TAG, "[OTA] no update partition found");
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     esp_ota_handle_t ota_handle;
@@ -702,7 +667,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         ESP_LOGE(TAG, "[OTA] esp_ota_begin failed");
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     ESP_LOGI(TAG, "[OTA] esp_ota_begin OK, partition addr=0x%x size=0x%x", update_partition->address, update_partition->size);
@@ -745,7 +709,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         esp_ota_end(ota_handle); // cleanup, don't set boot
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
 
@@ -764,7 +727,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         esp_ota_end(ota_handle);
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     ota_monitor_end_stage("verify_hash");
@@ -778,7 +740,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         esp_ota_end(ota_handle);
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     ota_monitor_end_stage("hexstr_to_bytes");
@@ -791,7 +752,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         esp_ota_end(ota_handle);
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     ota_monitor_end_stage("verify_signature");
@@ -804,7 +764,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         ESP_LOGE(TAG, "[OTA] esp_ota_end failed");
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     if (esp_ota_set_boot_partition(update_partition) != ESP_OK)
@@ -812,14 +771,12 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         ESP_LOGE(TAG, "[OTA] esp_ota_set_boot_partition failed");
         free(manifest);
         mz_zip_reader_end(&zip);
-        heap_caps_free(zip_buf);
         return false;
     }
     ota_monitor_end_stage("ota_set_boot_partition");
     ESP_LOGI(TAG, "[OTA] OTA committed. Rebooting in 500 ms...");
     free(manifest);
     mz_zip_reader_end(&zip);
-    heap_caps_free(zip_buf);
     // optionally remove update.zip from SPIFFS to free space
     remove(zip_path);
 
