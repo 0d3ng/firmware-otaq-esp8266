@@ -8,7 +8,7 @@ static const unsigned char PUBLIC_KEY_PEM_P256[] =
 // ECDSA P-384 public key in PEM format
 static const unsigned char PUBLIC_KEY_PEM_P384[] =
     "-----BEGIN PUBLIC KEY-----\n"
-    "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEwM0/3EjLm4NWw93US1b0fKsaKCU+V0Wm\n"
-    "kZGjXEzA/Or8vULjR3a0qGSduQiOkxZPK9PTtbEYOd68pNncU+hekK6RExZ7WwlK\n"
-    "Dfr892bIWC4JnuiytMRzgnQIeFiaF7ZZ\n"
+    "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEyng9sslA7/f8A0ri6Tgf6jq1NEE2YUCF\n"
+    "N5ZjUEoqTuN3ygXyBVaM7tgwlIdi1NS99Qxq7YoRNOz2fXa7iXYL9gwBdvkhyFwQ\n"
+    "VEACVTqRNtJub/RBovXrmyCJa4S7RfkO\n"
     "-----END PUBLIC KEY-----\n";
