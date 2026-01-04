@@ -176,6 +176,9 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
     // Force no gzip (identity)
     esp_http_client_set_header(client, "Accept-Encoding", "identity");
     esp_http_client_set_header(client, "User-Agent", "ESP32");
+
+    // Reset WDT before long operations
+    esp_task_wdt_reset();
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK)
     {
@@ -219,6 +222,8 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
 
     while (1)
     {
+        // Reset WDT while downloading
+        esp_task_wdt_reset();
         int read_len = esp_http_client_read(client, (char *)buffer, buf_size);
 
         if (read_len < 0)
@@ -262,9 +267,14 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
     }
 
     free(buffer);
+    // Reset WDT before finishing file operations
+    esp_task_wdt_reset();
     fflush(f);
     fsync(fileno(f));
     fclose(f);
+
+    // Reset WDT before cleaning up HTTP client
+    esp_task_wdt_reset();
     esp_http_client_cleanup(client);
 
     // Verify file size
@@ -782,8 +792,8 @@ static bool perform_ota_update(void)
 
     ESP_LOGI(TAG, "[OTA] Manifest:\n%s", manifest_str);
 
-    char expected_hash_hex[65];
-    char signature_hex[129];
+    char expected_hash_hex[HASH_HEX_BUF];
+    char signature_hex[SIG_BUF_LEN];
     char new_version[64];
 
     if (!parse_manifest(manifest_str, expected_hash_hex, sizeof(expected_hash_hex),
