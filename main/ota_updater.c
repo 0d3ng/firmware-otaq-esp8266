@@ -19,17 +19,17 @@
 #include "esp_timer.h"
 #include "mqtt_app.h"
 #include "ota_control.h"
-#include "certs/fullchain.h"
+#include "esp_crt_bundle.h"
 
 // polinema server https
 #define MANIFEST_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/manifest.json"
-#define FIRMWARE_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware.bin"
+#define FIRMWARE_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware-otaq.bin"
 #define TAG "OTA_SECURE"
 #define MAX_MANIFEST_SIZE 4096
 #define SIG_LEN 64
 
 #define MANIFEST_PATH "/spiffs/manifest.json"
-#define FIRMWARE_PATH "/spiffs/firmware.bin"
+#define FIRMWARE_PATH "/spiffs/firmware-otaq.bin"
 
 // ba89c973ffb9836d7c3c9f0b6bc869455cdb6db33aa299c297fd1726f567abd9 -> private key
 static const uint8_t PUBLIC_KEY[32] = {0x0B, 0xC1, 0x2F, 0x3D, 0x71, 0x82, 0x04, 0x68, 0x6B, 0x66, 0x90, 0x42, 0xD9, 0x21, 0xC9, 0x1D, 0xB1, 0x2F, 0x83, 0x34, 0x0E, 0x80, 0xC4, 0x83, 0x78, 0x92, 0x82, 0x80, 0x51, 0xFA, 0xFC, 0xD8};
@@ -176,7 +176,7 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
 {
     esp_http_client_config_t config = {
         .url = url,
-        .cert_pem = fullchain_pem,
+        .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = false,
         .timeout_ms = 30000};
 
@@ -643,10 +643,34 @@ static bool flash_firmware_from_spiffs(const char *bin_path, const char *expecte
 
     ESP_LOGI(TAG, "[OTA] OTA committed. Rebooting...");
 
-    // Cleanup files
-    remove(bin_path);
-    remove(MANIFEST_PATH);
+    // // Reset WDT before reboot
+    // esp_task_wdt_reset();
 
+    // // Cleanup files
+    // ESP_LOGI(TAG, "[OTA] Cleaning up files...");
+    // if (remove(bin_path) == 0)
+    // {
+    //     ESP_LOGI(TAG, "[OTA] Firmware file deleted");
+    // }
+    // else
+    // {
+    //     ESP_LOGW(TAG, "[OTA] Failed to delete firmware file");
+    // }
+    // esp_task_wdt_reset();
+    // vTaskDelay(pdMS_TO_TICKS(100));
+
+    // ESP_LOGI(TAG, "[OTA] Deleting manifest file...");
+    // if (remove(MANIFEST_PATH) == 0)
+    // {
+    //     ESP_LOGI(TAG, "[OTA] Manifest file deleted");
+    // }
+    // else
+    // {
+    //     ESP_LOGW(TAG, "[OTA] Failed to delete manifest file");
+    // }
+
+    // Final WDT reset and reboot
+    esp_task_wdt_reset();
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
 
