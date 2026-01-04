@@ -33,7 +33,7 @@ jobs:
         run: |
           git clone --depth 1 --branch v5.5.1 https://github.com/espressif/esp-idf.git $HOME/esp-idf
           cd $HOME/esp-idf
-          ./install.sh esp32
+          ./install.sh esp32s3
 
       - name: Set firmware version info
         run: |
@@ -41,8 +41,13 @@ jobs:
           BUILD_DATE=$(date "+%Y%m%dT%H%M")
           BUILD_NUMBER=${GITHUB_RUN_NUMBER}
           FIRMWARE_VERSION="${GIT_HASH}-${BUILD_DATE}-build${BUILD_NUMBER}"
+          PADDING_MB="${{ github.event.inputs.padding_mb }}"
+          if [ -z "$PADDING_MB" ]; then
+            PADDING_MB=0
+          fi
+          FIRMWARE_ALGORITHM="ECDSA384_${PADDING_MB}MB"
           echo "FIRMWARE_VERSION=${FIRMWARE_VERSION}" >> $GITHUB_ENV
-          echo "FIRMWARE_ALGORITHM=ECDSA384" >> $GITHUB_ENV
+          echo "FIRMWARE_ALGORITHM=${FIRMWARE_ALGORITHM}" >> $GITHUB_ENV
           echo "Firmware version: ${FIRMWARE_VERSION}"
           echo "Firmware algorithm: ${FIRMWARE_ALGORITHM}"
 
@@ -57,7 +62,7 @@ jobs:
           idf.py fullclean
 
           echo "=== Step 3: Set target ==="
-          idf.py set-target esp32
+          idf.py set-target esp32s3
 
           echo "=== Step 4: Build firmware ==="
           idf.py build -D FIRMWARE_VERSION="${{ env.FIRMWARE_VERSION }}" -D FIRMWARE_ALGORITHM="${{ env.FIRMWARE_ALGORITHM }}"

@@ -2,7 +2,7 @@
 #include "esp_log.h"
 #include "mqtt_client.h"
 #include "ota_updater.h"
-#include "certs/fullchain.h"
+#include "esp_crt_bundle.h"
 
 static const char *TAG = "mqtt_app";
 
@@ -48,8 +48,7 @@ void mqtt_app_start(void)
         // .broker.address.uri = "mqtt://140.238.199.159", // ganti broker kamu
         .credentials.username = "uwais",
         .credentials.authentication.password = "uw415_4Lqarn1",
-        .broker.verification.certificate = fullchain_pem,
-        .broker.verification.certificate_len = fullchain_pem_len,
+        .broker.verification.crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     client = esp_mqtt_client_init(&mqtt_cfg);
