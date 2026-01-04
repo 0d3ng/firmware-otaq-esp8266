@@ -20,23 +20,16 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include "certs/isrgrootx1.h"
-#include "certs/fullchain.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "mqtt_app.h"
 #include "ota_control.h"
 #include "certs/pub_ecdsa.h"
+#include "esp_crt_bundle.h"
 
 // polinema server https
-#define OTA_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware.zip"
-// polinema server
-// #define OTA_URL "http://103.172.249.254:8000/api/v1/firmware/firmware.zip"
-// cloudflared server
-// #define OTA_URL "https://fastapi.sinaungoding.com/api/v1/firmware/firmware.zip"
-// apatos server
-// #define OTA_URL "http://192.168.10.102:8000/api/v1/firmware/firmware.zip"
-// local lab server
-// #define OTA_URL "http://192.168.137.1:8000/api/v1/firmware/firmware.zip"
+#define MANIFEST_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/manifest.json"
+#define FIRMWARE_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware-otaq.bin"
 #define TAG "OTA_SECURE"
 #define MAX_MANIFEST_SIZE 4096
 
@@ -46,8 +39,8 @@
 
 #define SIG_BUF_LEN 145
 
-#define UPDATE_ZIP_PATH "/spiffs/update.zip"
-#define FIRMWARE_ENTRY_NAME "firmware-otaq.bin" // sesuai zipmu
+#define MANIFEST_PATH "/spiffs/manifest.json"
+#define FIRMWARE_PATH "/spiffs/firmware-otaq.bin"
 
 static volatile bool ota_flag = false;
 static uint64_t stage_start_time = 0;
@@ -165,14 +158,12 @@ void mount_spiffs()
     }
 }
 
-/* ---------------- Download ZIP -> SPIFFS (streaming) ----------------
-   Avoid allocating whole zip in RAM.
-*/
-static bool download_zip_to_spiffs(const char *url)
+/* ---------------- Download single file to SPIFFS (generic) ---------------- */
+static bool download_file_to_spiffs(const char *url, const char *dest_path)
 {
     esp_http_client_config_t config = {
         .url = url,
-        .cert_pem = fullchain_pem,
+        .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = false,
         .timeout_ms = 30000};
 
@@ -193,22 +184,27 @@ static bool download_zip_to_spiffs(const char *url)
         return false;
     }
     int content_length = esp_http_client_fetch_headers(client);
-    ESP_LOGI(TAG, "HTTP GET Status = %d, content_length = %d",
-             esp_http_client_get_status_code(client),
-             content_length);
+    int status_code = esp_http_client_get_status_code(client);
+    ESP_LOGI(TAG, "[HTTP] GET %s Status=%d, Length=%d", url, status_code, content_length);
 
-    esp_task_wdt_reset(); // Reset WDT before fopen (SPIFFS open may block)
-    FILE *f = fopen(UPDATE_ZIP_PATH, "wb");
-    esp_task_wdt_reset(); // Reset WDT after fopen
+    if (status_code != 200)
+    {
+        ESP_LOGE(TAG, "[HTTP] Bad status code: %d", status_code);
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    esp_task_wdt_reset();
+    FILE *f = fopen(dest_path, "wb");
+    esp_task_wdt_reset();
     if (!f)
     {
-        ESP_LOGE(TAG, "Failed to open %s for writing", UPDATE_ZIP_PATH);
+        ESP_LOGE(TAG, "Failed to open %s for writing", dest_path);
         esp_http_client_cleanup(client);
         return false;
     }
 
     const int buf_size = 8192;
-    const int PROGRESS_STEP = 5; // log every 5%
     uint8_t *buffer = malloc(buf_size);
     if (!buffer)
     {
@@ -218,15 +214,13 @@ static bool download_zip_to_spiffs(const char *url)
         return false;
     }
 
-    ESP_LOGI(TAG, "[HTTP] Start download to %s", UPDATE_ZIP_PATH);
     int total_read = 0;
     int last_percent = -1;
-    int last_logged = 0;
 
     while (1)
     {
         int read_len = esp_http_client_read(client, (char *)buffer, buf_size);
-        // ESP_LOGI(TAG, "[HTTP] read_len=%d", read_len);
+
         if (read_len < 0)
         {
             ESP_LOGE(TAG, "[HTTP] read error");
@@ -235,48 +229,60 @@ static bool download_zip_to_spiffs(const char *url)
             esp_http_client_cleanup(client);
             return false;
         }
+
         if (read_len == 0)
         {
-            ESP_LOGI(TAG, "[HTTP] Download finished, total %d bytes", total_read);
+            ESP_LOGI(TAG, "[HTTP] Download finished: %d bytes", total_read);
             break;
         }
+
         size_t wrote = fwrite(buffer, 1, read_len, f);
         if (wrote != (size_t)read_len)
         {
-            ESP_LOGE(TAG, "[SPIFFS] fwrite failed (wrote=%d expected=%d)", (int)wrote, read_len);
+            ESP_LOGE(TAG, "[SPIFFS] fwrite failed");
             free(buffer);
             fclose(f);
             esp_http_client_cleanup(client);
-            esp_task_wdt_reset();
             return false;
         }
+
         total_read += read_len;
         esp_task_wdt_reset();
 
-        // Logger progress
+        // Progress log
         if (content_length > 0)
         {
             int percent = (total_read * 100) / content_length;
-            if (percent != last_percent && percent % PROGRESS_STEP == 0)
+            if (percent != last_percent && percent % 10 == 0)
             {
-                ESP_LOGI(TAG, "[HTTP] Download progress: %d%% (%d/%d bytes)", percent, total_read, content_length);
+                ESP_LOGI(TAG, "[HTTP] Progress: %d%% (%d/%d)", percent, total_read, content_length);
                 last_percent = percent;
-            }
-        }
-        else
-        {
-            // Fallback log per 64KB
-            if (total_read - last_logged >= 65536)
-            {
-                ESP_LOGI(TAG, "[HTTP] Downloaded %d KB", total_read / 1024);
-                last_logged = total_read;
             }
         }
     }
 
     free(buffer);
+    fflush(f);
+    fsync(fileno(f));
     fclose(f);
     esp_http_client_cleanup(client);
+
+    // Verify file size
+    struct stat st;
+    if (stat(dest_path, &st) != 0)
+    {
+        ESP_LOGE(TAG, "[HTTP] Failed to stat %s", dest_path);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "[HTTP] File saved: %s (%d bytes)", dest_path, (int)st.st_size);
+
+    if (st.st_size != total_read)
+    {
+        ESP_LOGE(TAG, "[HTTP] Size mismatch! Expected %d, got %d", total_read, (int)st.st_size);
+        return false;
+    }
+
     return true;
 }
 
@@ -496,226 +502,149 @@ static size_t mz_to_ota_callback(void *pOpaque, mz_uint64 file_ofs, const void *
     return n;
 }
 
-/* ---------------- Main extraction & OTA flow using SPIFFS update.zip ----------------
-   Steps:
-    - open zip file from SPIFFS
-    - extract manifest.json to heap
-    - parse manifest (get expected hash hex, signature hex)
-    - locate firmware entry and its uncompressed size
-    - begin esp_ota on next update partition
-    - init sha ctx, call mz_zip_reader_extract_to_callback to stream firmware to ota via callback
-    - finalize sha, compare hex, verify signature
-    - if ok, call esp_ota_end + esp_ota_set_boot_partition
-*/
-static bool extract_zip_and_flash_ota(const char *zip_path)
+/* ---------------- Flash OTA from .bin file in SPIFFS ---------------- */
+static bool flash_firmware_from_spiffs(const char *bin_path, const char *expected_hash_hex, const char *signature_hex)
 {
     ota_monitor_start_stage();
-    mz_zip_archive zip;
-    memset(&zip, 0, sizeof(zip));
 
-    /* Reset WDT before starting zip operations (may block on I/O) */
+    // Open firmware file
     esp_task_wdt_reset();
+    FILE *f = fopen(bin_path, "rb");
+    if (!f)
+    {
+        ESP_LOGE(TAG, "[OTA] Failed to open %s", bin_path);
+        return false;
+    }
 
-    if (!mz_zip_reader_init_file(&zip, zip_path, 0))
-    {
-        ESP_LOGE(TAG, "[ZIP] mz_zip_reader_init_file failed for %s", zip_path);
-        return false;
-    }
-    ESP_LOGI(TAG, "[ZIP] Opened %s", zip_path);
+    // Get file size
+    fseek(f, 0, SEEK_END);
+    size_t fw_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    ESP_LOGI(TAG, "[OTA] Firmware size: %u bytes", (unsigned)fw_size);
 
-    int num_files = (int)mz_zip_reader_get_num_files(&zip);
-    ESP_LOGI(TAG, "[ZIP] entries: %d", num_files);
-
-    // 1) extract manifest.json to heap
-    int manifest_index = mz_zip_reader_locate_file(&zip, "manifest.json", NULL, 0);
-    if (manifest_index < 0)
-    {
-        ESP_LOGE(TAG, "[ZIP] manifest.json not found");
-        mz_zip_reader_end(&zip);
-        return false;
-    }
-    mz_zip_archive_file_stat manifest_stat;
-    if (!mz_zip_reader_file_stat(&zip, manifest_index, &manifest_stat))
-    {
-        ESP_LOGE(TAG, "[ZIP] stat manifest failed");
-        mz_zip_reader_end(&zip);
-        return false;
-    }
-    if (manifest_stat.m_uncomp_size == 0 || manifest_stat.m_uncomp_size > MAX_MANIFEST_SIZE - 1)
-    {
-        ESP_LOGE(TAG, "[ZIP] manifest.json size invalid: %llu", (unsigned long long)manifest_stat.m_uncomp_size);
-        mz_zip_reader_end(&zip);
-        return false;
-    }
-    /* Reset WDT before extracting manifest to heap (may allocate/copy several KB) */
-    esp_task_wdt_reset();
-    void *manifest_heap = mz_zip_reader_extract_to_heap(&zip, manifest_index, NULL, 0);
-    if (!manifest_heap)
-    {
-        ESP_LOGE(TAG, "[ZIP] extract manifest to heap failed");
-        mz_zip_reader_end(&zip);
-        return false;
-    }
-    size_t manifest_len = (size_t)manifest_stat.m_uncomp_size;
-    char *manifest = malloc(manifest_len + 1);
-    if (!manifest)
-    {
-        ESP_LOGE(TAG, "[ZIP] malloc manifest failed");
-        mz_free(manifest_heap);
-        mz_zip_reader_end(&zip);
-        return false;
-    }
-    memcpy(manifest, manifest_heap, manifest_len);
-    manifest[manifest_len] = '\0';
-    mz_free(manifest_heap);
-    ESP_LOGI(TAG, "[ZIP] manifest extracted (%d bytes):\n%s", (int)manifest_len, manifest);
-
-    // parse manifest
-    char expected_hash_hex[HASH_HEX_BUF];
-    char signature_hex[SIG_BUF_LEN];
-    char new_version[64];
-    if (!parse_manifest(manifest, expected_hash_hex, sizeof(expected_hash_hex),
-                        signature_hex, sizeof(signature_hex),
-                        new_version, sizeof(new_version)))
-    {
-        ESP_LOGE(TAG, "[OTA] parse manifest failed");
-        free(manifest);
-        mz_zip_reader_end(&zip);
-        return false;
-    }
-    ESP_LOGI(TAG, "[OTA] expected hash: %s", expected_hash_hex);
-    ESP_LOGI(TAG, "[OTA] signature hex: %s", signature_hex);
-    ESP_LOGI(TAG, "[OTA] new version: %s", new_version);
-    ESP_LOGI(TAG, "[OTA] current version: %s", FIRMWARE_VERSION);
-
-    // Compare versions using compare_firmware_versions helper
-    ota_monitor_start_stage();
-    int cmp = compare_firmware_versions(FIRMWARE_VERSION, new_version);
-    if (cmp < 0)
-    {
-        ESP_LOGI(TAG, "[OTA] Current firmware is newer than candidate. Skipping update.");
-        free(manifest);
-        mz_zip_reader_end(&zip);
-        return false;
-    }
-    else if (cmp == 0)
-    {
-        ESP_LOGI(TAG, "[OTA] Current firmware version equals candidate. Skipping update.");
-        free(manifest);
-        mz_zip_reader_end(&zip);
-        return false;
-    }
-    ESP_LOGI(TAG, "[OTA] Candidate firmware is newer. Proceeding with update.");
-    ota_monitor_end_stage("version_check");
-    ota_monitor_end_stage("parse_manifest");
-
-    // 2) locate firmware entry
-    ota_monitor_start_stage();
-    int fw_index = mz_zip_reader_locate_file(&zip, FIRMWARE_ENTRY_NAME, NULL, 0);
-    if (fw_index < 0)
-    {
-        ESP_LOGE(TAG, "[ZIP] firmware entry %s not found", FIRMWARE_ENTRY_NAME);
-        free(manifest);
-        mz_zip_reader_end(&zip);
-        return false;
-    }
-    mz_zip_archive_file_stat fw_stat;
-    if (!mz_zip_reader_file_stat(&zip, fw_index, &fw_stat))
-    {
-        ESP_LOGE(TAG, "[ZIP] stat firmware failed");
-        free(manifest);
-        mz_zip_reader_end(&zip);
-        return false;
-    }
-    size_t fw_size = (size_t)fw_stat.m_uncomp_size;
-    ESP_LOGI(TAG, "[ZIP] firmware entry found size=%u bytes", (unsigned)fw_size);
     if (fw_size == 0)
     {
-        ESP_LOGE(TAG, "[ZIP] firmware size is zero");
-        free(manifest);
-        mz_zip_reader_end(&zip);
+        ESP_LOGE(TAG, "[OTA] Firmware size is zero");
+        fclose(f);
         return false;
     }
 
-    // 3) begin OTA
+    // Begin OTA
     const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
     if (!update_partition)
     {
-        ESP_LOGE(TAG, "[OTA] no update partition found");
-        free(manifest);
-        mz_zip_reader_end(&zip);
+        ESP_LOGE(TAG, "[OTA] No update partition found");
+        fclose(f);
         return false;
     }
+
     esp_ota_handle_t ota_handle;
-    /* Reset WDT before beginning OTA write (flash operations may block) */
     esp_task_wdt_reset();
+
     if (esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &ota_handle) != ESP_OK)
     {
         ESP_LOGE(TAG, "[OTA] esp_ota_begin failed");
-        free(manifest);
-        mz_zip_reader_end(&zip);
-        return false;
-    }
-    ESP_LOGI(TAG, "[OTA] esp_ota_begin OK, partition addr=0x%x size=0x%x", update_partition->address, update_partition->size);
-
-    // prepare callback state
-    extract_callback_state_t cb_state;
-    memset(&cb_state, 0, sizeof(cb_state));
-    cb_state.ota_handle = ota_handle;
-    cb_state.total_written = 0;
-    cb_state.file_size = fw_size;
-    cb_state.error = false;
-    cb_state.update_partition = update_partition;
-
-    // init SHA
-    mbedtls_sha256_init(&cb_state.sha_ctx);
-    mbedtls_sha256_starts(&cb_state.sha_ctx, 0); // use SHA-256
-    // 4) extract firmware with callback (streaming -> OTA)
-    ESP_LOGI(TAG, "[ZIP] Start streaming firmware from zip to OTA (callback)");
-    if (!mz_zip_reader_extract_to_callback(&zip, fw_index, mz_to_ota_callback, &cb_state, 0))
-    {
-        ESP_LOGE(TAG, "[ZIP] extract_to_callback failed");
-        cb_state.error = true;
-    }
-
-    // finish SHA
-    uint8_t calc_hash[HASH_LEN_BYTES];
-    mbedtls_sha256_finish(&cb_state.sha_ctx, calc_hash);
-    mbedtls_sha256_free(&cb_state.sha_ctx);
-
-    // close zip
-    mz_zip_reader_end(&zip);
-    ota_monitor_end_stage("extract_and_stream_ota");
-    ESP_LOGI(TAG, "[ZIP] extraction finished, total written %u bytes", (unsigned)cb_state.total_written);
-
-    // if callback flagged error -> abort OTA
-    if (cb_state.error)
-    {
-        ESP_LOGE(TAG, "[OTA] Error during streaming - aborting OTA");
-        esp_ota_end(ota_handle); // cleanup, don't set boot
-        free(manifest);
+        fclose(f);
         return false;
     }
 
-    // 5) compare hash (calc_hash) with expected_hash_hex
+    ESP_LOGI(TAG, "[OTA] Begin writing to partition 0x%x", update_partition->address);
+
+    // Init SHA256
+    mbedtls_sha256_context sha_ctx;
+    mbedtls_sha256_init(&sha_ctx);
+    mbedtls_sha256_starts(&sha_ctx, 0);
+
+    // Stream file to OTA partition
+    const int buf_size = 8192;
+    uint8_t *buffer = malloc(buf_size);
+    if (!buffer)
+    {
+        ESP_LOGE(TAG, "[OTA] malloc failed");
+        fclose(f);
+        esp_ota_end(ota_handle);
+        return false;
+    }
+
+    size_t total_written = 0;
+    int last_percent = -1;
+
+    while (1)
+    {
+        size_t read_len = fread(buffer, 1, buf_size, f);
+
+        if (read_len == 0)
+        {
+            if (feof(f))
+            {
+                ESP_LOGI(TAG, "[OTA] File read complete: %u bytes", (unsigned)total_written);
+                break;
+            }
+            else
+            {
+                ESP_LOGE(TAG, "[OTA] fread error");
+                free(buffer);
+                fclose(f);
+                esp_ota_end(ota_handle);
+                return false;
+            }
+        }
+
+        // Update SHA
+        mbedtls_sha256_update(&sha_ctx, buffer, read_len);
+
+        // Write to OTA
+        esp_err_t err = esp_ota_write(ota_handle, buffer, read_len);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "[OTA] esp_ota_write failed: %s", esp_err_to_name(err));
+            free(buffer);
+            fclose(f);
+            esp_ota_end(ota_handle);
+            return false;
+        }
+
+        total_written += read_len;
+        esp_task_wdt_reset();
+
+        // Progress
+        int percent = (int)((total_written * 100) / fw_size);
+        if (percent != last_percent && percent % 10 == 0)
+        {
+            ESP_LOGI(TAG, "[OTA] Writing: %d%% (%u/%u)", percent, (unsigned)total_written, (unsigned)fw_size);
+            last_percent = percent;
+        }
+    }
+
+    free(buffer);
+    fclose(f);
+
+    // Finalize SHA
+    uint8_t calc_hash[32];
+    mbedtls_sha256_finish(&sha_ctx, calc_hash);
+    mbedtls_sha256_free(&sha_ctx);
+
+    ota_monitor_end_stage("flash_firmware");
+
+    // Verify hash
     ota_monitor_start_stage();
-    char calc_hash_hex[HASH_HEX_BUF];
-    for (int i = 0; i < HASH_LEN_BYTES; ++i)
+    char calc_hash_hex[65];
+    for (int i = 0; i < 32; ++i)
         sprintf(calc_hash_hex + i * 2, "%02x", calc_hash[i]);
-    calc_hash_hex[HASH_HEX_LEN] = '\0';
-    ESP_LOGI(TAG, "[OTA] computed hash: %s", calc_hash_hex);
+    calc_hash_hex[64] = '\0';
+
+    ESP_LOGI(TAG, "[OTA] Computed hash: %s", calc_hash_hex);
+    ESP_LOGI(TAG, "[OTA] Expected hash: %s", expected_hash_hex);
 
     if (strcmp(calc_hash_hex, expected_hash_hex) != 0)
     {
-        ESP_LOGE(TAG, "[OTA] Hash mismatch! expected: %s", expected_hash_hex);
-        // cleanup: end ota but do not set boot
+        ESP_LOGE(TAG, "[OTA] Hash mismatch!");
         esp_ota_end(ota_handle);
-        free(manifest);
         return false;
     }
     ota_monitor_end_stage("verify_hash");
 
-    // 6) verify signature: signature is hex in manifest -> bytes
+    // Verify signature
     ota_monitor_start_stage();
     uint8_t signature[SIG_BUF_LEN];
     int sig_len = hexstr_to_bytes(signature_hex, signature, sizeof(signature));
@@ -723,23 +652,17 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
     {
         ESP_LOGE(TAG, "[OTA] Signature hex->bytes conversion failed: %d", sig_len);
         esp_ota_end(ota_handle);
-        free(manifest);
         return false;
     }
-    // ESP_LOG_BUFFER_HEX(TAG, signature, sig_len);
-    ota_monitor_end_stage("hexstr_to_bytes");
 
     // verify ECDSA over the 32-byte hash
-    ota_monitor_start_stage();
     mbedtls_pk_context pk;
     mbedtls_pk_init(&pk);
-
     int ret = mbedtls_pk_parse_public_key(&pk, PUBLIC_KEY_PEM_P256, sizeof(PUBLIC_KEY_PEM_P256));
     if (ret != 0)
     {
         ESP_LOGE(TAG, "[OTA] Failed to parse public key: -0x%04X", -ret);
         esp_ota_end(ota_handle);
-        free(manifest);
         return false;
     }
 
@@ -754,7 +677,6 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
         mbedtls_strerror(ret, err_buf, sizeof(err_buf));
         ESP_LOGE(TAG, "[OTA] Signature verification FAILED: -0x%04X (%d): %s", -ret, ret, err_buf);
         esp_ota_end(ota_handle);
-        free(manifest);
         return false;
     }
 
@@ -762,36 +684,158 @@ static bool extract_zip_and_flash_ota(const char *zip_path)
     ota_monitor_end_stage("verify_signature");
     ESP_LOGI(TAG, "[OTA] Hash and signature verified OK");
 
-    // 7) finalize OTA: esp_ota_end already necessary, then set boot partition
+    // Finalize OTA
     ota_monitor_start_stage();
     if (esp_ota_end(ota_handle) != ESP_OK)
     {
         ESP_LOGE(TAG, "[OTA] esp_ota_end failed");
-        free(manifest);
         return false;
     }
+
     if (esp_ota_set_boot_partition(update_partition) != ESP_OK)
     {
         ESP_LOGE(TAG, "[OTA] esp_ota_set_boot_partition failed");
-        free(manifest);
         return false;
     }
-    ota_monitor_end_stage("ota_set_boot_partition");
-    ESP_LOGI(TAG, "[OTA] OTA committed. Rebooting in 500 ms...");
-    free(manifest);
-    // optionally remove update.zip from SPIFFS to free space
-    remove(zip_path);
+    ota_monitor_end_stage("ota_finalize");
 
+    ESP_LOGI(TAG, "[OTA] OTA committed. Rebooting...");
+
+    // // Reset WDT before reboot
+    // esp_task_wdt_reset();
+
+    // // Cleanup files
+    // ESP_LOGI(TAG, "[OTA] Cleaning up files...");
+    // if (remove(bin_path) == 0)
+    // {
+    //     ESP_LOGI(TAG, "[OTA] Firmware file deleted");
+    // }
+    // else
+    // {
+    //     ESP_LOGW(TAG, "[OTA] Failed to delete firmware file");
+    // }
+    // esp_task_wdt_reset();
+    // vTaskDelay(pdMS_TO_TICKS(100));
+
+    // ESP_LOGI(TAG, "[OTA] Deleting manifest file...");
+    // if (remove(MANIFEST_PATH) == 0)
+    // {
+    //     ESP_LOGI(TAG, "[OTA] Manifest file deleted");
+    // }
+    // else
+    // {
+    //     ESP_LOGW(TAG, "[OTA] Failed to delete manifest file");
+    // }
+
+    // Final WDT reset and reboot
+    esp_task_wdt_reset();
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
+
     return true;
 }
 
-/* ---------------- ota_task: orchestrate previous functions ----------------
-   - mount spiffs
-   - download zip to spiffs
-   - extract & flash
-*/
+/* ---------------- Main OTA function (no ZIP) ---------------- */
+static bool perform_ota_update(void)
+{
+    // 1. Download manifest
+    ESP_LOGI(TAG, "[OTA] Downloading manifest...");
+    ota_monitor_start_stage();
+    if (!download_file_to_spiffs(MANIFEST_URL, MANIFEST_PATH))
+    {
+        ESP_LOGE(TAG, "[OTA] Failed to download manifest");
+        return false;
+    }
+    ota_monitor_end_stage("download_manifest");
+
+    // 2. Parse manifest
+    ota_monitor_start_stage();
+    FILE *mf = fopen(MANIFEST_PATH, "rb");
+    if (!mf)
+    {
+        ESP_LOGE(TAG, "[OTA] Failed to open manifest");
+        return false;
+    }
+
+    fseek(mf, 0, SEEK_END);
+    size_t manifest_size = ftell(mf);
+    fseek(mf, 0, SEEK_SET);
+
+    if (manifest_size == 0 || manifest_size > MAX_MANIFEST_SIZE)
+    {
+        ESP_LOGE(TAG, "[OTA] Invalid manifest size: %u", (unsigned)manifest_size);
+        fclose(mf);
+        return false;
+    }
+
+    char *manifest_str = malloc(manifest_size + 1);
+    if (!manifest_str)
+    {
+        ESP_LOGE(TAG, "[OTA] malloc failed for manifest");
+        fclose(mf);
+        return false;
+    }
+
+    fread(manifest_str, 1, manifest_size, mf);
+    manifest_str[manifest_size] = '\0';
+    fclose(mf);
+
+    ESP_LOGI(TAG, "[OTA] Manifest:\n%s", manifest_str);
+
+    char expected_hash_hex[65];
+    char signature_hex[129];
+    char new_version[64];
+
+    if (!parse_manifest(manifest_str, expected_hash_hex, sizeof(expected_hash_hex),
+                        signature_hex, sizeof(signature_hex),
+                        new_version, sizeof(new_version)))
+    {
+        ESP_LOGE(TAG, "[OTA] Failed to parse manifest");
+        free(manifest_str);
+        return false;
+    }
+    free(manifest_str);
+
+    ESP_LOGI(TAG, "[OTA] New version: %s", new_version);
+    ESP_LOGI(TAG, "[OTA] Current version: %s", FIRMWARE_VERSION);
+
+    // 3. Compare versions
+    int cmp = compare_firmware_versions(FIRMWARE_VERSION, new_version);
+    if (cmp <= 0)
+    {
+        ESP_LOGI(TAG, "[OTA] No update needed (current >= new)");
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "[OTA] Update available. Proceeding...");
+    ota_monitor_end_stage("parse_manifest");
+
+    // 4. Download firmware
+    ESP_LOGI(TAG, "[OTA] Downloading firmware binary...");
+    ota_monitor_start_stage();
+    if (!download_file_to_spiffs(FIRMWARE_URL, FIRMWARE_PATH))
+    {
+        ESP_LOGE(TAG, "[OTA] Failed to download firmware");
+        remove(MANIFEST_PATH);
+        return false;
+    }
+    ota_monitor_end_stage("download_firmware");
+
+    // 5. Flash firmware
+    ESP_LOGI(TAG, "[OTA] Flashing firmware...");
+    if (!flash_firmware_from_spiffs(FIRMWARE_PATH, expected_hash_hex, signature_hex))
+    {
+        ESP_LOGE(TAG, "[OTA] Failed to flash firmware");
+        remove(MANIFEST_PATH);
+        remove(FIRMWARE_PATH);
+        return false;
+    }
+
+    return true;
+}
+
+/* ---------------- ota_task (simplified) ---------------- */
 void ota_task(void *pvParameter)
 {
     esp_task_wdt_add(NULL);
@@ -807,41 +851,16 @@ void ota_task(void *pvParameter)
         }
 
         ESP_LOGI(TAG, "[OTA] Triggered");
+        esp_task_wdt_reset();
 
-        // Pause sensor task to reduce CPU load during OTA
-        ota_pause_sensors();
-
-        // Download zip to SPIFFS
-        ESP_LOGI(TAG, "[OTA] Downloading zip from %s ...", OTA_URL);
-        ota_monitor_start_stage();
-        esp_task_wdt_reset(); // Reset WDT before starting download
-        if (!download_zip_to_spiffs(OTA_URL))
+        if (!perform_ota_update())
         {
-            ESP_LOGE(TAG, "[OTA] download_zip_to_spiffs failed");
-            ota_resume_sensors();
-            continue;
-        }
-        esp_task_wdt_reset(); // Reset WDT after download
-        ota_monitor_end_stage("download_zip_to_spiffs");
-
-        // Extract manifest & stream firmware to OTA
-        ESP_LOGI(TAG, "[OTA] Extracting and flashing firmware...");
-        esp_task_wdt_reset(); // Reset WDT before extraction
-        if (!extract_zip_and_flash_ota(UPDATE_ZIP_PATH))
-        {
-            ESP_LOGE(TAG, "[OTA] extract_zip_and_flash_ota failed");
-            // optionally delete update.zip to retry next time
-            // remove(UPDATE_ZIP_PATH);
-            ota_resume_sensors();
-            continue;
+            ESP_LOGE(TAG, "[OTA] Update failed");
         }
 
-        // Resume sensors if OTA flow returns (normally device will reboot on success)
-        ota_resume_sensors();
-
-        // normally won't reach here because extract_zip_and_flash_ota reboots on success
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
+
     vTaskDelete(NULL);
 }
 /* ---------------- End of ota_updater.c ---------------- */

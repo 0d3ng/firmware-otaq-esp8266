@@ -38,13 +38,12 @@ void app_main(void)
     mqtt_app_start();
 
     // Sensor Task
-    ESP_LOGI(TAG, "Starting Sensor Task...");
-    xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 5, NULL);
+    // ESP_LOGI(TAG, "Starting Sensor Task...");
+    // xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 5, NULL);
 
     // OTA Task
     ESP_LOGI(TAG, "Starting OTA Task...");
     xTaskCreate(ota_task, "ota_task", 16384, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "System initialized. Waiting for MQTT OTA trigger...");
-
 }
