@@ -165,7 +165,10 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
         .url = url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = false,
-        .timeout_ms = 30000};
+        .timeout_ms = 60000,
+        .buffer_size = 16384,
+        .buffer_size_tx = 4096,
+    };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client)
