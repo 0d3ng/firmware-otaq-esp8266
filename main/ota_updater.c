@@ -463,58 +463,6 @@ int hexstr_to_bytes(const char *hex, uint8_t *out, size_t out_len)
     return (int)(hlen / 2); // return actual length
 }
 
-/* ---------------- Callback state for miniz extraction -> OTA ----------------
-   This struct is passed as pOpaque to mz_zip_reader_extract_to_callback.
-*/
-typedef struct
-{
-    esp_ota_handle_t ota_handle;
-    mbedtls_sha256_context sha_ctx;
-    size_t total_written;
-    size_t file_size;
-    bool error; // set to true if any error occurred in callback
-    const esp_partition_t *update_partition;
-} extract_callback_state_t;
-
-/* ---------------- mz callback: write chunk to OTA & update SHA ----------------
-   Returns number of bytes written (n) on success, 0 on error.
-*/
-static size_t mz_to_ota_callback(void *pOpaque, mz_uint64 file_ofs, const void *pBuf, size_t n)
-{
-    (void)file_ofs; // we don't need random-access; miniz may pass offsets
-    extract_callback_state_t *st = (extract_callback_state_t *)pOpaque;
-    if (!st || st->error)
-        return 0;
-
-    // update SHA256
-    mbedtls_sha256_update(&st->sha_ctx, (const unsigned char *)pBuf, n);
-
-    // write to OTA
-    esp_err_t err = esp_ota_write(st->ota_handle, pBuf, n);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "[OTA CB] esp_ota_write failed: %s", esp_err_to_name(err));
-        st->error = true;
-        return 0;
-    }
-
-    st->total_written += n;
-
-    // progress log (every chunk)
-    int progress = 0;
-    if (st->file_size > 0)
-    {
-        progress = (int)((st->total_written * 100) / st->file_size);
-    }
-    ESP_LOGI(TAG, "[OTA CB] wrote %d bytes (total %d/%d) %d%%",
-             (int)n, (int)st->total_written, (int)st->file_size, progress);
-
-    // reset WDT while working
-    esp_task_wdt_reset();
-
-    return n;
-}
-
 /* ---------------- Flash OTA from .bin file in SPIFFS ---------------- */
 static bool flash_firmware_from_spiffs(const char *bin_path, const char *expected_hash_hex, const char *signature_hex)
 {
