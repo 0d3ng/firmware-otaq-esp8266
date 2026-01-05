@@ -189,7 +189,13 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
         esp_http_client_cleanup(client);
         return false;
     }
+
+    // Reset WDT before long operations
+    esp_task_wdt_reset();
     int content_length = esp_http_client_fetch_headers(client);
+
+    // Reset WDT before long operations
+    esp_task_wdt_reset();
     int status_code = esp_http_client_get_status_code(client);
     ESP_LOGI(TAG, "[HTTP] GET %s Status=%d, Length=%d", url, status_code, content_length);
 
@@ -799,6 +805,12 @@ static bool perform_ota_update(void)
 /* ---------------- ota_task (simplified) ---------------- */
 void ota_task(void *pvParameter)
 {
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = 30000,  // 30 detik
+        .idle_core_mask = 0,
+        .trigger_panic = true
+    };
+    esp_task_wdt_reconfigure(&wdt_config);
     esp_task_wdt_add(NULL);
     mount_spiffs();
 
