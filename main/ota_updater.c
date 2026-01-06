@@ -21,9 +21,16 @@
 #include "ota_control.h"
 #include "esp_crt_bundle.h"
 
-// polinema server https
-#define MANIFEST_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/manifest.json"
-#define FIRMWARE_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware-otaq.bin"
+#if FIRMWARE_TLS == 1
+// https connections
+    #define MANIFEST_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/manifest.json"
+    #define FIRMWARE_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware-otaq.bin"
+#else
+// http connections
+    #define MANIFEST_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/manifest.json"
+    #define FIRMWARE_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/firmware-otaq.bin"
+#endif
+
 #define TAG "OTA_SECURE"
 #define MAX_MANIFEST_SIZE 4096
 #define SIG_LEN 64
