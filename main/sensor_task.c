@@ -15,8 +15,8 @@
 
 #include "ina219.h"
 
-#define SDA_GPIO 8
-#define SCL_GPIO 9
+#define SDA_GPIO 1
+#define SCL_GPIO 2
 
 static const char *TAG = "sensor_task";
 
@@ -149,8 +149,8 @@ void sensor_task(void *pvParameter)
             snprintf(timestamp, sizeof(timestamp), "%04d-%02d-%02dT%02d:%02d:%02d", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
             char payload[256];
             snprintf(payload, sizeof(payload), "{\"volt\":%.3f,\"current\":%.3f,\"power\":%.3f,\"energy_joule\":%.3f,\"algorithm\":\"%s\",\"timestamp\":\"%s\"}", volt, current, power, energy_joule, FIRMWARE_ALGORITHM, timestamp);
-            // mqtt_publish("device/002/power", payload);
-            // ESP_LOGI(TAG, "Payload: %s", payload);
+            mqtt_publish("device/002/power", payload);
+            ESP_LOGI(TAG, "Payload: %s", payload);
             last_publish_time_ms = now_ms;
             energy_joule = 0.0f; // reset after publish
         }
