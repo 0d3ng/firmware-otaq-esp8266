@@ -47,6 +47,48 @@ This firmware is developed for the ESP32-S3 using ESP-IDF. The project includes 
 - Edit the `sdkconfig` file to set build parameters.
 - Edit the `partitions.csv` file if you want to change the flash partitioning.
 
+## Hardware Wiring - INA219 Current Sensor
+
+### INA219 to ESP32-S3 Wiring Diagram
+
+```
+Battery (5V or 3.7V LiPo)
+  │
+  ├─── Battery + ─────────→ INA219 VIN+ (TOP)
+  │
+  │                        INA219 VIN- (TOP) ───→ ESP32-S3 VIN (5V pin)
+  │                                                      │
+  └─── Battery - ────────────────────────────────────→ ESP32-S3 GND
+                             │
+                             └─→ INA219 GND (BOTTOM)
+
+INA219 Bottom Pins to ESP32:
+  VCC (bottom) ──→ ESP32 3.3V   (power for INA219 chip)
+  GND (bottom) ──→ ESP32 GND    (common ground)
+  SCL (bottom) ──→ ESP32 GPIO 10
+  SDA (bottom) ──→ ESP32 GPIO 11
+  V+  (bottom) ──→ (no need to connect, monitor only)
+  V-  (bottom) ──→ (no need to connect, monitor only)
+```
+
+### Pinout Details
+
+| INA219 Pin | ESP32-S3 Pin | Description |
+|------------|--------------|-------------|
+| VCC (bottom) | 3.3V | Power for INA219 chip |
+| GND (bottom) | GND | Common ground |
+| SCL (bottom) | GPIO 10 | I2C Clock |
+| SDA (bottom) | GPIO 11 | I2C Data |
+| VIN+ (top) | Battery + | Power input (high current) |
+| VIN- (top) | ESP32 VIN/5V | Power output to load |
+
+### Important Notes
+- **VIN+ and VIN-** (top screw terminals) are the high current path for power measurement
+- **VCC/GND** (bottom pins) are only for I2C communication (3.3V)
+- All current flows through: Battery → VIN+ → Shunt Resistor → VIN- → ESP32
+- Battery GND **MUST** be connected to ESP32 GND (common ground)
+- Supported battery voltage: 3.7V LiPo, 5V USB, up to 26V (32V range)
+
 ## License
 This project uses the MIT license. Feel free to modify and use as needed.
 
