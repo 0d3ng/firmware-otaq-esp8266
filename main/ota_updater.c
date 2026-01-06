@@ -643,31 +643,31 @@ static bool flash_firmware_from_spiffs(const char *bin_path, const char *expecte
 
     ESP_LOGI(TAG, "[OTA] OTA committed. Rebooting...");
 
-    // // Reset WDT before reboot
-    // esp_task_wdt_reset();
+    // Reset WDT before reboot
+    esp_task_wdt_reset();
 
-    // // Cleanup files
-    // ESP_LOGI(TAG, "[OTA] Cleaning up files...");
-    // if (remove(bin_path) == 0)
-    // {
-    //     ESP_LOGI(TAG, "[OTA] Firmware file deleted");
-    // }
-    // else
-    // {
-    //     ESP_LOGW(TAG, "[OTA] Failed to delete firmware file");
-    // }
-    // esp_task_wdt_reset();
-    // vTaskDelay(pdMS_TO_TICKS(100));
+    // Cleanup files
+    ESP_LOGI(TAG, "[OTA] Cleaning up files...");
+    if (remove(bin_path) == 0)
+    {
+        ESP_LOGI(TAG, "[OTA] Firmware file deleted");
+    }
+    else
+    {
+        ESP_LOGW(TAG, "[OTA] Failed to delete firmware file");
+    }
+    esp_task_wdt_reset();
+    vTaskDelay(pdMS_TO_TICKS(100));
 
-    // ESP_LOGI(TAG, "[OTA] Deleting manifest file...");
-    // if (remove(MANIFEST_PATH) == 0)
-    // {
-    //     ESP_LOGI(TAG, "[OTA] Manifest file deleted");
-    // }
-    // else
-    // {
-    //     ESP_LOGW(TAG, "[OTA] Failed to delete manifest file");
-    // }
+    ESP_LOGI(TAG, "[OTA] Deleting manifest file...");
+    if (remove(MANIFEST_PATH) == 0)
+    {
+        ESP_LOGI(TAG, "[OTA] Manifest file deleted");
+    }
+    else
+    {
+        ESP_LOGW(TAG, "[OTA] Failed to delete manifest file");
+    }
 
     // Final WDT reset and reboot
     esp_task_wdt_reset();
@@ -780,6 +780,12 @@ static bool perform_ota_update(void)
 /* ---------------- ota_task (simplified) ---------------- */
 void ota_task(void *pvParameter)
 {
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = 30000,  // 30 seconds
+        .idle_core_mask = 0,
+        .trigger_panic = true
+    };
+    esp_task_wdt_reconfigure(&wdt_config);
     esp_task_wdt_add(NULL);
     mount_spiffs();
 
