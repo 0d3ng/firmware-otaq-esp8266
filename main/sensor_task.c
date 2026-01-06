@@ -150,7 +150,7 @@ void sensor_task(void *pvParameter)
             char payload[256];
             snprintf(payload, sizeof(payload), "{\"volt\":%.3f,\"current\":%.3f,\"power\":%.3f,\"energy_joule\":%.3f,\"algorithm\":\"%s\",\"version\":\"%s\",\"timestamp\":\"%s\"}", volt, current, power, energy_joule, FIRMWARE_ALGORITHM, FIRMWARE_VERSION, timestamp);
             mqtt_publish("device/002/power", payload);
-            ESP_LOGI(TAG, "Payload: %s", payload);
+            // ESP_LOGI(TAG, "Payload: %s", payload);
             last_publish_time_ms = now_ms;
             energy_joule = 0.0f; // reset after publish
         }

@@ -65,7 +65,7 @@ jobs:
           idf.py set-target esp32s3
 
           echo "=== Step 4: Build firmware ==="
-          idf.py build -D FIRMWARE_VERSION="${{ env.FIRMWARE_VERSION }}" -D FIRMWARE_ALGORITHM="${{ env.FIRMWARE_ALGORITHM }}"
+          idf.py build -D FIRMWARE_VERSION="${{ env.FIRMWARE_VERSION }}" -D FIRMWARE_ALGORITHM="${{ env.FIRMWARE_ALGORITHM }}" -D FIRMWARE_TLS=1
 
           echo "=== Step 5: copy firmware-otaq.bin ==="
           cp build/firmware-otaq-s3.bin build/firmware-otaq.bin

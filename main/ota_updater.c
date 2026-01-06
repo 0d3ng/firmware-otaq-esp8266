@@ -176,9 +176,12 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
 {
     esp_http_client_config_t config = {
         .url = url,
+    #if FIRMWARE_TLS == 1
         .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = false,
-        .timeout_ms = 30000};
+    #endif
+        .timeout_ms = 30000
+    };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client)
@@ -781,10 +784,9 @@ static bool perform_ota_update(void)
 void ota_task(void *pvParameter)
 {
     esp_task_wdt_config_t wdt_config = {
-        .timeout_ms = 30000,  // 30 seconds
+        .timeout_ms = 30000, // 30 seconds
         .idle_core_mask = 0,
-        .trigger_panic = true
-    };
+        .trigger_panic = true};
     esp_task_wdt_reconfigure(&wdt_config);
     esp_task_wdt_add(NULL);
     mount_spiffs();
