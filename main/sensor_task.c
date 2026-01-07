@@ -5,11 +5,8 @@
 #include "mqtt_app.h"
 #include <stdlib.h>
 #include <time.h>
-#include "DHT22.h"
 #include "ota_control.h"
 #include "esp_timer.h"
-
-#define PIN_GPIO_DHT22 4
 
 #define ADC_CHANNEL ADC_CHANNEL_6 // GPIO34
 
@@ -26,11 +23,6 @@ static uint64_t last_publish_time_ms = 0;
 
 void sensor_task(void *pvParameter)
 {
-    uint16_t temperature, humidity;
-    DHTinit(PIN_GPIO_DHT22);
-    vTaskDelay(pdMS_TO_TICKS(1000)); // Tunggu sensor siap
-    ESP_LOGI(TAG, "Sensor DHT22 ready. Starting data read loop...");
-
     // adc_oneshot_unit_handle_t adc_handle;
     // adc_cali_handle_t cali_handle;
 
