@@ -23,7 +23,7 @@ idf_build_set_property(COMPILE_DEFINITIONS "-DFIRMWARE_VERSION=\"${FIRMWARE_VERS
 # ==== Handle firmware algorithm from CI/CD ====
 if(NOT DEFINED FIRMWARE_ALGORITHM)
     # default algorithm for local builds
-    set(FIRMWARE_ALGORITHM "ED25519_0MB")
+    set(FIRMWARE_ALGORITHM "ED25519_1MB")
 endif()
 
 message(STATUS "Using firmware algorithm: ${FIRMWARE_ALGORITHM}")
@@ -32,4 +32,4 @@ message(STATUS "Using firmware algorithm: ${FIRMWARE_ALGORITHM}")
 idf_build_set_property(COMPILE_DEFINITIONS "-DFIRMWARE_ALGORITHM=\"${FIRMWARE_ALGORITHM}\"" APPEND)
 
 # Add TLS configurations to compile definitions for all components
-idf_build_set_property(COMPILE_DEFINITIONS "-DFIRMWARE_TLS=0" APPEND)
+idf_build_set_property(COMPILE_DEFINITIONS "-DFIRMWARE_TLS=1" APPEND)

@@ -65,7 +65,7 @@ jobs:
           idf.py set-target esp32s3
 
           echo "=== Step 4: Build firmware ==="
-          idf.py build -D FIRMWARE_VERSION="${{ env.FIRMWARE_VERSION }}" -D FIRMWARE_ALGORITHM="${{ env.FIRMWARE_ALGORITHM }}" -D FIRMWARE_TLS=0
+          idf.py build -D FIRMWARE_VERSION="${{ env.FIRMWARE_VERSION }}" -D FIRMWARE_ALGORITHM="${{ env.FIRMWARE_ALGORITHM }}" -D FIRMWARE_TLS=1
 
           echo "=== Step 5: copy firmware-otaq.bin ==="
           cp build/firmware-otaq-s3.bin build/firmware-otaq.bin
@@ -165,7 +165,7 @@ jobs:
       - name: Upload package via API
         run: |
           STATUS=$(curl -s -o response.txt -w "%{http_code}" \
-            -X POST "${{ vars.API_URL_HTTP }}/firmware/upload" \
+            -X POST "${{ vars.API_URL }}/firmware/upload" \
             -H "Authorization: Bearer ${{ secrets.API_TOKEN }}" \
             -F "file=@firmware.zip")
 
