@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "mqtt_app.h"
@@ -175,6 +177,70 @@ void mount_spiffs()
         size_t total = 0, used = 0;
         esp_spiffs_info(NULL, &total, &used);
         ESP_LOGI(TAG, "SPIFFS mounted. total: %d bytes, used: %d bytes", (int)total, (int)used);
+        
+        // Clean up old files if SPIFFS usage is high
+        if (used > (total / 2))  // If more than 50% used
+        {
+            ESP_LOGW(TAG, "SPIFFS usage high, cleaning up old files...");
+            
+            // List all files in SPIFFS
+            DIR *dir = opendir("/spiffs");
+            int file_count = 0;
+            if (dir)
+            {
+                struct dirent *entry;
+                ESP_LOGI(TAG, "Files in SPIFFS:");
+                while ((entry = readdir(dir)) != NULL)
+                {
+                    char full_path[280];  // Increased size: 255 (max filename) + 8 ("/spiffs/") + margin
+                    snprintf(full_path, sizeof(full_path), "/spiffs/%s", entry->d_name);
+                    
+                    struct stat st;
+                    if (stat(full_path, &st) == 0)
+                    {
+                        ESP_LOGI(TAG, "  - %s (%d bytes)", entry->d_name, (int)st.st_size);
+                        file_count++;
+                        
+                        // Delete all files to clean SPIFFS
+                        if (remove(full_path) == 0)
+                        {
+                            ESP_LOGI(TAG, "    Deleted: %s", entry->d_name);
+                        }
+                    }
+                }
+                closedir(dir);
+            }
+            
+            // Check usage after cleanup
+            esp_spiffs_info(NULL, &total, &used);
+            ESP_LOGI(TAG, "SPIFFS after cleanup: total: %d bytes, used: %d bytes, files found: %d", (int)total, (int)used, file_count);
+            
+            // If still high usage but no files found, format SPIFFS (orphaned blocks)
+            if (used > (total / 2) && file_count == 0)
+            {
+                ESP_LOGW(TAG, "SPIFFS has orphaned blocks. Formatting...");
+                esp_vfs_spiffs_unregister(NULL);
+                esp_err_t fmt_err = esp_spiffs_format(NULL);
+                if (fmt_err == ESP_OK)
+                {
+                    ESP_LOGI(TAG, "SPIFFS formatted successfully");
+                    // Re-mount
+                    esp_vfs_spiffs_conf_t conf = {
+                        .base_path = "/spiffs",
+                        .partition_label = NULL,
+                        .max_files = 5,
+                        .format_if_mount_failed = true
+                    };
+                    esp_vfs_spiffs_register(&conf);
+                    esp_spiffs_info(NULL, &total, &used);
+                    ESP_LOGI(TAG, "SPIFFS after format: total: %d bytes, used: %d bytes", (int)total, (int)used);
+                }
+                else
+                {
+                    ESP_LOGE(TAG, "SPIFFS format failed: %s", esp_err_to_name(fmt_err));
+                }
+            }
+        }
     }
 }
 
@@ -763,26 +829,183 @@ static bool perform_ota_update(void)
     ESP_LOGI(TAG, "[OTA] Update available. Proceeding...");
     ota_monitor_end_stage("parse_manifest");
 
-    // 4. Download firmware
-    ESP_LOGI(TAG, "[OTA] Downloading firmware binary...");
+    // 4. Stream firmware directly to OTA partition (NO SPIFFS)
+    ESP_LOGI(TAG, "[OTA] Streaming firmware to OTA partition...");
     ota_monitor_start_stage();
-    if (!download_file_to_spiffs(FIRMWARE_URL, FIRMWARE_PATH))
-    {
-        ESP_LOGE(TAG, "[OTA] Failed to download firmware");
-        remove(MANIFEST_PATH);
-        return false;
-    }
-    ota_monitor_end_stage("download_firmware");
+    
+    esp_http_client_config_t http_config = {
+        .url = FIRMWARE_URL,
+    #if FIRMWARE_TLS == 1
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .skip_cert_common_name_check = false,
+    #endif
+        .timeout_ms = 60000,
+        .buffer_size = 16384,
+        .buffer_size_tx = 4096
+    };
 
-    // 5. Flash firmware
-    ESP_LOGI(TAG, "[OTA] Flashing firmware...");
-    if (!flash_firmware_from_spiffs(FIRMWARE_PATH, expected_hash_hex, signature_hex))
+    esp_https_ota_config_t ota_config = {
+        .http_config = &http_config,
+    };
+
+    esp_https_ota_handle_t https_ota_handle = NULL;
+    esp_err_t err = esp_https_ota_begin(&ota_config, &https_ota_handle);
+    if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "[OTA] Failed to flash firmware");
+        ESP_LOGE(TAG, "[OTA] esp_https_ota_begin failed: %s", esp_err_to_name(err));
         remove(MANIFEST_PATH);
-        remove(FIRMWARE_PATH);
         return false;
     }
+
+    int image_size = esp_https_ota_get_image_size(https_ota_handle);
+    ESP_LOGI(TAG, "[OTA] Firmware size: %d bytes", image_size);
+
+    // Stream firmware with progress
+    int last_percent = -1;
+    int total_read = 0;
+
+    while (1)
+    {
+        err = esp_https_ota_perform(https_ota_handle);
+        if (err != ESP_ERR_HTTPS_OTA_IN_PROGRESS)
+            break;
+
+        total_read = esp_https_ota_get_image_len_read(https_ota_handle);
+        int percent = (total_read * 100) / image_size;
+        
+        if (percent != last_percent && percent % 10 == 0)
+        {
+            ESP_LOGI(TAG, "[OTA] Progress: %d%% (%d/%d)", percent, total_read, image_size);
+            last_percent = percent;
+        }
+        
+        esp_task_wdt_reset();
+    }
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "[OTA] Firmware streaming failed: %s", esp_err_to_name(err));
+        esp_https_ota_abort(https_ota_handle);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "[OTA] Download complete: %d bytes", total_read);
+    ota_monitor_end_stage("stream_firmware");
+
+    // 5. Verify hash by reading from partition
+    ota_monitor_start_stage();
+    ESP_LOGI(TAG, "[OTA] Verifying firmware hash...");
+    
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!update_partition)
+    {
+        ESP_LOGE(TAG, "[OTA] Failed to get update partition");
+        esp_https_ota_abort(https_ota_handle);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    // Calculate hash from partition
+    mbedtls_sha256_context sha_ctx;
+    mbedtls_sha256_init(&sha_ctx);
+    mbedtls_sha256_starts(&sha_ctx, 0);
+
+    const int buf_size = 8192;
+    uint8_t *buffer = malloc(buf_size);
+    if (!buffer)
+    {
+        ESP_LOGE(TAG, "[OTA] malloc failed for verification");
+        esp_https_ota_abort(https_ota_handle);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    size_t remaining = total_read;
+    size_t offset = 0;
+
+    while (remaining > 0)
+    {
+        size_t to_read = (remaining > buf_size) ? buf_size : remaining;
+        err = esp_partition_read(update_partition, offset, buffer, to_read);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "[OTA] Partition read failed: %s", esp_err_to_name(err));
+            free(buffer);
+            esp_https_ota_abort(https_ota_handle);
+            remove(MANIFEST_PATH);
+            return false;
+        }
+
+        mbedtls_sha256_update(&sha_ctx, buffer, to_read);
+        offset += to_read;
+        remaining -= to_read;
+        esp_task_wdt_reset();
+    }
+
+    free(buffer);
+
+    uint8_t calc_hash[32];
+    mbedtls_sha256_finish(&sha_ctx, calc_hash);
+    mbedtls_sha256_free(&sha_ctx);
+
+    char calc_hash_hex[65];
+    for (int i = 0; i < 32; ++i)
+        sprintf(calc_hash_hex + i * 2, "%02x", calc_hash[i]);
+    calc_hash_hex[64] = '\0';
+
+    ESP_LOGI(TAG, "[OTA] Computed hash: %s", calc_hash_hex);
+    ESP_LOGI(TAG, "[OTA] Expected hash: %s", expected_hash_hex);
+
+    if (strcmp(calc_hash_hex, expected_hash_hex) != 0)
+    {
+        ESP_LOGE(TAG, "[OTA] Hash mismatch!");
+        esp_https_ota_abort(https_ota_handle);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+    ota_monitor_end_stage("verify_hash");
+
+    // 6. Verify signature
+    ota_monitor_start_stage();
+    uint8_t signature[SIG_LEN];
+    if (!hexstr_to_bytes(signature_hex, signature, SIG_LEN))
+    {
+        ESP_LOGE(TAG, "[OTA] Signature hex->bytes failed");
+        esp_https_ota_abort(https_ota_handle);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    if (crypto_ed25519_check(signature, PUBLIC_KEY, calc_hash, 32) != 0)
+    {
+        ESP_LOGE(TAG, "[OTA] Signature verification FAILED");
+        esp_https_ota_abort(https_ota_handle);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+    ota_monitor_end_stage("verify_signature");
+
+    ESP_LOGI(TAG, "[OTA] Hash and signature verified OK");
+
+    // 7. Finalize OTA
+    ota_monitor_start_stage();
+    err = esp_https_ota_finish(https_ota_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "[OTA] esp_https_ota_finish failed: %s", esp_err_to_name(err));
+        remove(MANIFEST_PATH);
+        return false;
+    }
+    ota_monitor_end_stage("ota_finalize");
+
+    ESP_LOGI(TAG, "[OTA] OTA committed. Rebooting...");
+    
+    // Cleanup
+    esp_task_wdt_reset();
+    remove(MANIFEST_PATH);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
 
     return true;
 }
