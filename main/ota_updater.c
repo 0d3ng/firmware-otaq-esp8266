@@ -697,7 +697,7 @@ static bool perform_ota_update(void)
     // Calculate hash from partition
     mbedtls_sha512_context sha_ctx;
     mbedtls_sha512_init(&sha_ctx);
-    mbedtls_sha512_starts(&sha_ctx, 0);
+    mbedtls_sha512_starts(&sha_ctx, 1); // use SHA-384
 
     const int buf_size = 8192;
     uint8_t *buffer = malloc(buf_size);
