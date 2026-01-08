@@ -4,11 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       padding_mb:
-<<<<<<< HEAD
         description: "Size padding on MB (0 = without padding, 1 = 1MB padding, 2 = 2MB padding, 3 = 3MB padding, etc.)"
-=======
-        description: "Size padding on MB (0 = without padding, 1 = 1MB padding, 2 = 2MB padding, 4 = 4MB padding, etc.)"
->>>>>>> 7c5c33771c360a65b7e2d77781e581fe89478075
         required: true
         default: "0"
 
@@ -49,11 +45,7 @@ jobs:
           if [ -z "$PADDING_MB" ]; then
             PADDING_MB=0
           fi
-<<<<<<< HEAD
           FIRMWARE_ALGORITHM="ECDSA384_${PADDING_MB}MB"
-=======
-          FIRMWARE_ALGORITHM="ECDSA256_${PADDING_MB}MB"
->>>>>>> 7c5c33771c360a65b7e2d77781e581fe89478075
           echo "FIRMWARE_VERSION=${FIRMWARE_VERSION}" >> $GITHUB_ENV
           echo "FIRMWARE_ALGORITHM=${FIRMWARE_ALGORITHM}" >> $GITHUB_ENV
           echo "Firmware version: ${FIRMWARE_VERSION}"

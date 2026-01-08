@@ -29,12 +29,12 @@
 
 #if FIRMWARE_TLS == 1
 // https connections
-    #define MANIFEST_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/manifest.json"
-    #define FIRMWARE_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware-otaq.bin"
+#define MANIFEST_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/manifest.json"
+#define FIRMWARE_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware-otaq.bin"
 #else
 // http connections
-    #define MANIFEST_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/manifest.json"
-    #define FIRMWARE_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/firmware-otaq.bin"
+#define MANIFEST_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/manifest.json"
+#define FIRMWARE_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/firmware-otaq.bin"
 #endif
 
 #define TAG "OTA_SECURE"
@@ -234,10 +234,10 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
 {
     esp_http_client_config_t config = {
         .url = url,
-    #if FIRMWARE_TLS == 1
+#if FIRMWARE_TLS == 1
         .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = false,
-    #endif
+#endif
         .timeout_ms = 60000,
         .buffer_size = 16384,
         .buffer_size_tx = 4096,
@@ -621,17 +621,16 @@ static bool perform_ota_update(void)
     // 4. Stream firmware directly to OTA partition (NO SPIFFS)
     ESP_LOGI(TAG, "[OTA] Streaming firmware to OTA partition...");
     ota_monitor_start_stage();
-    
+
     esp_http_client_config_t http_config = {
         .url = FIRMWARE_URL,
-    #if FIRMWARE_TLS == 1
+#if FIRMWARE_TLS == 1
         .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = false,
-    #endif
+#endif
         .timeout_ms = 60000,
         .buffer_size = 16384,
-        .buffer_size_tx = 4096
-    };
+        .buffer_size_tx = 4096};
 
     esp_https_ota_config_t ota_config = {
         .http_config = &http_config,
@@ -661,13 +660,13 @@ static bool perform_ota_update(void)
 
         total_read = esp_https_ota_get_image_len_read(https_ota_handle);
         int percent = (total_read * 100) / image_size;
-        
+
         if (percent != last_percent && percent % 10 == 0)
         {
             ESP_LOGI(TAG, "[OTA] Progress: %d%% (%d/%d)", percent, total_read, image_size);
             last_percent = percent;
         }
-        
+
         esp_task_wdt_reset();
     }
 
@@ -685,7 +684,7 @@ static bool perform_ota_update(void)
     // 5. Verify hash by reading from partition
     ota_monitor_start_stage();
     ESP_LOGI(TAG, "[OTA] Verifying firmware hash...");
-    
+
     const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
     if (!update_partition)
     {
@@ -809,7 +808,7 @@ static bool perform_ota_update(void)
     ota_monitor_end_stage("ota_finalize");
 
     ESP_LOGI(TAG, "[OTA] OTA committed. Rebooting...");
-    
+
     // Cleanup
     esp_task_wdt_reset();
     remove(MANIFEST_PATH);
