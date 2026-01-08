@@ -18,6 +18,8 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "mqtt_app.h"
@@ -92,9 +94,9 @@ void ota_monitor_end_stage(const char *stage_name)
     // Publish global stage info
     char msg[512];
     snprintf(msg, sizeof(msg),
-             "{\"stage\":\"%s\",\"elapsed_ms\":%llu,\"free_heap\":%u,\"min_free_heap\":%u,\"algorithm\":\"%s\",\"timestamp\":\"%s\"}",
+             "{\"stage\":\"%s\",\"elapsed_ms\":%llu,\"free_heap\":%u,\"min_free_heap\":%u,\"algorithm\":\"%s\",\"version\":\"%s\",\"timestamp\":\"%s\"}",
              stage_name, (unsigned long long)(elapsed_us / 1000),
-             (unsigned int)free_heap, (unsigned int)min_free_heap, FIRMWARE_ALGORITHM, timestamp);
+             (unsigned int)free_heap, (unsigned int)min_free_heap, FIRMWARE_ALGORITHM, FIRMWARE_VERSION, timestamp);
     ESP_LOGI(TAG, "[%s] Stage %s completed in %llu ms, free_heap=%u, min_free_heap=%u", timestamp,
              stage_name, (unsigned long long)(elapsed_us / 1000), (unsigned int)free_heap, (unsigned int)min_free_heap);
     mqtt_publish("ota/metrics", msg);
@@ -118,9 +120,9 @@ void ota_monitor_end_stage(const char *stage_name)
         // Tambahkan stack info ke JSON message
         snprintf(msg, sizeof(msg),
                  "{\"stage\":\"%s\",\"task\":\"%s\",\"cpu_percent\":%.2f,"
-                 "\"stack_free\":%u,\"algorithm\":\"%s\",\"timestamp\":\"%s\"}",
+                 "\"stack_free\":%u,\"algorithm\":\"%s\",\"version\":\"%s\",\"timestamp\":\"%s\"}",
                  stage_name, taskStatusArray[i].pcTaskName, cpu_percent,
-                 (unsigned)stack_free_bytes, FIRMWARE_ALGORITHM, timestamp);
+                 (unsigned)stack_free_bytes, FIRMWARE_ALGORITHM, FIRMWARE_VERSION, timestamp);
 
         ESP_LOGI(TAG, "[%s] Task %s CPU usage: %.2f%%", timestamp,
                  taskStatusArray[i].pcTaskName, cpu_percent);
@@ -161,6 +163,69 @@ void mount_spiffs()
         size_t total = 0, used = 0;
         esp_spiffs_info(NULL, &total, &used);
         ESP_LOGI(TAG, "SPIFFS mounted. total: %d bytes, used: %d bytes", (int)total, (int)used);
+
+        // Clean up old files if SPIFFS usage is high
+        if (used > (total / 2)) // If more than 50% used
+        {
+            ESP_LOGW(TAG, "SPIFFS usage high, cleaning up old files...");
+
+            // List all files in SPIFFS
+            DIR *dir = opendir("/spiffs");
+            int file_count = 0;
+            if (dir)
+            {
+                struct dirent *entry;
+                ESP_LOGI(TAG, "Files in SPIFFS:");
+                while ((entry = readdir(dir)) != NULL)
+                {
+                    char full_path[280]; // Increased size: 255 (max filename) + 8 ("/spiffs/") + margin
+                    snprintf(full_path, sizeof(full_path), "/spiffs/%s", entry->d_name);
+
+                    struct stat st;
+                    if (stat(full_path, &st) == 0)
+                    {
+                        ESP_LOGI(TAG, "  - %s (%d bytes)", entry->d_name, (int)st.st_size);
+                        file_count++;
+
+                        // Delete all files to clean SPIFFS
+                        if (remove(full_path) == 0)
+                        {
+                            ESP_LOGI(TAG, "    Deleted: %s", entry->d_name);
+                        }
+                    }
+                }
+                closedir(dir);
+            }
+
+            // Check usage after cleanup
+            esp_spiffs_info(NULL, &total, &used);
+            ESP_LOGI(TAG, "SPIFFS after cleanup: total: %d bytes, used: %d bytes, files found: %d", (int)total, (int)used, file_count);
+
+            // If still high usage but no files found, format SPIFFS (orphaned blocks)
+            if (used > (total / 2) && file_count == 0)
+            {
+                ESP_LOGW(TAG, "SPIFFS has orphaned blocks. Formatting...");
+                esp_vfs_spiffs_unregister(NULL);
+                esp_err_t fmt_err = esp_spiffs_format(NULL);
+                if (fmt_err == ESP_OK)
+                {
+                    ESP_LOGI(TAG, "SPIFFS formatted successfully");
+                    // Re-mount
+                    esp_vfs_spiffs_conf_t conf = {
+                        .base_path = "/spiffs",
+                        .partition_label = NULL,
+                        .max_files = 5,
+                        .format_if_mount_failed = true};
+                    esp_vfs_spiffs_register(&conf);
+                    esp_spiffs_info(NULL, &total, &used);
+                    ESP_LOGI(TAG, "SPIFFS after format: total: %d bytes, used: %d bytes", (int)total, (int)used);
+                }
+                else
+                {
+                    ESP_LOGE(TAG, "SPIFFS format failed: %s", esp_err_to_name(fmt_err));
+                }
+            }
+        }
     }
 }
 
@@ -197,13 +262,13 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
         esp_http_client_cleanup(client);
         return false;
     }
-
-    // Reset WDT before long operations
+    // Reset WDT after open
     esp_task_wdt_reset();
     int content_length = esp_http_client_fetch_headers(client);
 
-    // Reset WDT before long operations
+    // Reset WDT before getting status code
     esp_task_wdt_reset();
+
     int status_code = esp_http_client_get_status_code(client);
     ESP_LOGI(TAG, "[HTTP] GET %s Status=%d, Length=%d", url, status_code, content_length);
 
@@ -758,10 +823,9 @@ static bool perform_ota_update(void)
 void ota_task(void *pvParameter)
 {
     esp_task_wdt_config_t wdt_config = {
-        .timeout_ms = 30000,  // 30 detik
+        .timeout_ms = 30000, // 30 seconds
         .idle_core_mask = 0,
-        .trigger_panic = true
-    };
+        .trigger_panic = true};
     esp_task_wdt_reconfigure(&wdt_config);
     esp_task_wdt_add(NULL);
     mount_spiffs();
