@@ -43,12 +43,16 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 void mqtt_app_start(void)
 {
     esp_mqtt_client_config_t mqtt_cfg = {
+        #if FIRMWARE_TLS == 1
         .broker.address.uri = "mqtts://ota.sinaungoding.com:8883", // ganti broker kamu
-        // .broker.address.uri = "mqtt://broker.sinaungoding.com", // ganti broker kamu
-        // .broker.address.uri = "mqtt://140.238.199.159", // ganti broker kamu
+        .broker.verification.crt_bundle_attach = esp_crt_bundle_attach,
         .credentials.username = "uwais",
         .credentials.authentication.password = "uw415_4Lqarn1",
-        .broker.verification.crt_bundle_attach = esp_crt_bundle_attach,
+        #else
+        .broker.address.uri = "mqtt://broker.sinaungoding.com:1884", // ganti broker kamu
+        .credentials.username = "noureen",
+        .credentials.authentication.password = "1234",
+        #endif
     };
 
     client = esp_mqtt_client_init(&mqtt_cfg);

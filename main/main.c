@@ -12,8 +12,9 @@ static const char *TAG = "main_app";
 
 void app_main(void)
 {
-    printf("Running firmware version: %s\n", FIRMWARE_VERSION);
-    printf("Using firmware algorithm: %s\n", FIRMWARE_ALGORITHM);
+    printf("Running firmware version    : %s\n", FIRMWARE_VERSION);
+    printf("Using firmware algorithm    : %s\n", FIRMWARE_ALGORITHM);
+    printf("Firmware TLS verification   : %s\n", FIRMWARE_TLS == 1 ? "ENABLED" : "DISABLED");
     ESP_LOGI(TAG, "Starting system...");
     // NVS init
     esp_err_t ret = nvs_flash_init();
@@ -38,8 +39,8 @@ void app_main(void)
     mqtt_app_start();
 
     // Sensor Task
-    // ESP_LOGI(TAG, "Starting Sensor Task...");
-    // xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 5, NULL);
+    ESP_LOGI(TAG, "Starting Sensor Task...");
+    xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 5, NULL);
 
     // OTA Task
     ESP_LOGI(TAG, "Starting OTA Task...");

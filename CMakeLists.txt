@@ -30,3 +30,6 @@ message(STATUS "Using firmware algorithm: ${FIRMWARE_ALGORITHM}")
 
 # Add algorithm to compile definitions for all components
 idf_build_set_property(COMPILE_DEFINITIONS "-DFIRMWARE_ALGORITHM=\"${FIRMWARE_ALGORITHM}\"" APPEND)
+
+# Add TLS configurations to compile definitions for all components
+idf_build_set_property(COMPILE_DEFINITIONS "-DFIRMWARE_TLS=1" APPEND)
