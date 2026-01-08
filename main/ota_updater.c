@@ -14,7 +14,6 @@
 #include "cJSON.h"
 #include "mbedtls/sha512.h"
 #include "mbedtls/error.h"
-#include "../miniz/miniz.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -26,9 +25,16 @@
 #include "certs/pub_ecdsa.h"
 #include "esp_crt_bundle.h"
 
-// polinema server https
-#define MANIFEST_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/manifest.json"
-#define FIRMWARE_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware-otaq.bin"
+#if FIRMWARE_TLS == 1
+// https connections
+    #define MANIFEST_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/manifest.json"
+    #define FIRMWARE_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware-otaq.bin"
+#else
+// http connections
+    #define MANIFEST_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/manifest.json"
+    #define FIRMWARE_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/firmware-otaq.bin"
+#endif
+
 #define TAG "OTA_SECURE"
 #define MAX_MANIFEST_SIZE 4096
 #define SIG_LEN 128
@@ -163,8 +169,10 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
 {
     esp_http_client_config_t config = {
         .url = url,
+    #if FIRMWARE_TLS == 1
         .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = false,
+    #endif
         .timeout_ms = 60000,
         .buffer_size = 16384,
         .buffer_size_tx = 4096,
@@ -469,239 +477,6 @@ int hexstr_to_bytes(const char *hex, uint8_t *out, size_t out_len)
     return (int)(hlen / 2); // return actual length
 }
 
-/* ---------------- Flash OTA from .bin file in SPIFFS ---------------- */
-static bool flash_firmware_from_spiffs(const char *bin_path, const char *expected_hash_hex, const char *signature_hex)
-{
-    ota_monitor_start_stage();
-
-    // Open firmware file
-    esp_task_wdt_reset();
-    FILE *f = fopen(bin_path, "rb");
-    if (!f)
-    {
-        ESP_LOGE(TAG, "[OTA] Failed to open %s", bin_path);
-        return false;
-    }
-
-    // Get file size
-    fseek(f, 0, SEEK_END);
-    size_t fw_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    ESP_LOGI(TAG, "[OTA] Firmware size: %u bytes", (unsigned)fw_size);
-
-    if (fw_size == 0)
-    {
-        ESP_LOGE(TAG, "[OTA] Firmware size is zero");
-        fclose(f);
-        return false;
-    }
-
-    // Begin OTA
-    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
-    if (!update_partition)
-    {
-        ESP_LOGE(TAG, "[OTA] No update partition found");
-        fclose(f);
-        return false;
-    }
-
-    esp_ota_handle_t ota_handle;
-    esp_task_wdt_reset();
-
-    if (esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &ota_handle) != ESP_OK)
-    {
-        ESP_LOGE(TAG, "[OTA] esp_ota_begin failed");
-        fclose(f);
-        return false;
-    }
-
-    ESP_LOGI(TAG, "[OTA] Begin writing to partition 0x%x", update_partition->address);
-
-    // Init SHA512
-    mbedtls_sha512_context sha_ctx;
-    mbedtls_sha512_init(&sha_ctx);
-    mbedtls_sha512_starts(&sha_ctx, 1); // use SHA-384
-
-    // Stream file to OTA partition
-    const int buf_size = 8192;
-    uint8_t *buffer = malloc(buf_size);
-    if (!buffer)
-    {
-        ESP_LOGE(TAG, "[OTA] malloc failed");
-        fclose(f);
-        esp_ota_end(ota_handle);
-        return false;
-    }
-
-    size_t total_written = 0;
-    int last_percent = -1;
-
-    while (1)
-    {
-        size_t read_len = fread(buffer, 1, buf_size, f);
-
-        if (read_len == 0)
-        {
-            if (feof(f))
-            {
-                ESP_LOGI(TAG, "[OTA] File read complete: %u bytes", (unsigned)total_written);
-                break;
-            }
-            else
-            {
-                ESP_LOGE(TAG, "[OTA] fread error");
-                free(buffer);
-                fclose(f);
-                esp_ota_end(ota_handle);
-                return false;
-            }
-        }
-
-        // Update SHA
-        mbedtls_sha512_update(&sha_ctx, buffer, read_len);
-
-        // Write to OTA
-        esp_err_t err = esp_ota_write(ota_handle, buffer, read_len);
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "[OTA] esp_ota_write failed: %s", esp_err_to_name(err));
-            free(buffer);
-            fclose(f);
-            esp_ota_end(ota_handle);
-            return false;
-        }
-
-        total_written += read_len;
-        esp_task_wdt_reset();
-
-        // Progress
-        int percent = (int)((total_written * 100) / fw_size);
-        if (percent != last_percent && percent % 10 == 0)
-        {
-            ESP_LOGI(TAG, "[OTA] Writing: %d%% (%u/%u)", percent, (unsigned)total_written, (unsigned)fw_size);
-            last_percent = percent;
-        }
-    }
-
-    free(buffer);
-    fclose(f);
-
-    // Finalize SHA
-    uint8_t calc_hash[HASH_LEN_BYTES];
-    mbedtls_sha512_finish(&sha_ctx, calc_hash);
-    mbedtls_sha512_free(&sha_ctx);
-
-    ota_monitor_end_stage("flash_firmware");
-
-    // Verify hash
-    ota_monitor_start_stage();
-    char calc_hash_hex[HASH_HEX_BUF];
-    for (int i = 0; i < HASH_LEN_BYTES; ++i)
-        sprintf(calc_hash_hex + i * 2, "%02x", calc_hash[i]);
-    calc_hash_hex[HASH_HEX_LEN] = '\0';
-
-    ESP_LOGI(TAG, "[OTA] Computed hash: %s", calc_hash_hex);
-    ESP_LOGI(TAG, "[OTA] Expected hash: %s", expected_hash_hex);
-
-    if (strcmp(calc_hash_hex, expected_hash_hex) != 0)
-    {
-        ESP_LOGE(TAG, "[OTA] Hash mismatch!");
-        esp_ota_end(ota_handle);
-        return false;
-    }
-    ota_monitor_end_stage("verify_hash");
-
-    // Verify signature
-    ota_monitor_start_stage();
-    uint8_t signature[SIG_BUF_LEN];
-    int sig_len = hexstr_to_bytes(signature_hex, signature, sizeof(signature));
-    if (sig_len < 0)
-    {
-        ESP_LOGE(TAG, "[OTA] Signature hex->bytes conversion failed: %d", sig_len);
-        esp_ota_end(ota_handle);
-        return false;
-    }
-
-    // verify ECDSA over the 32-byte hash
-    mbedtls_pk_context pk;
-    mbedtls_pk_init(&pk);
-    int ret = mbedtls_pk_parse_public_key(&pk, PUBLIC_KEY_PEM_P384, sizeof(PUBLIC_KEY_PEM_P384));
-    if (ret != 0)
-    {
-        ESP_LOGE(TAG, "[OTA] Failed to parse public key: -0x%04X", -ret);
-        esp_ota_end(ota_handle);
-        return false;
-    }
-
-    ESP_LOGI(TAG, "[OTA] pk type: %d", mbedtls_pk_get_type(&pk));
-    ESP_LOGI(TAG, "[OTA] Signature length: %d", sig_len);
-    ESP_LOGI(TAG, "[OTA] Hash length: %d", (int)sizeof(calc_hash));
-    // ESP_LOG_BUFFER_HEX(TAG, calc_hash, sizeof(calc_hash));
-    ret = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA384, calc_hash, 0, signature, sig_len);
-    if (ret != 0)
-    {
-        char err_buf[200];
-        mbedtls_strerror(ret, err_buf, sizeof(err_buf));
-        ESP_LOGE(TAG, "[OTA] Signature verification FAILED: -0x%04X (%d): %s", -ret, ret, err_buf);
-        esp_ota_end(ota_handle);
-        return false;
-    }
-
-    mbedtls_pk_free(&pk);
-    ota_monitor_end_stage("verify_signature");
-    ESP_LOGI(TAG, "[OTA] Hash and signature verified OK");
-
-    // Finalize OTA
-    ota_monitor_start_stage();
-    if (esp_ota_end(ota_handle) != ESP_OK)
-    {
-        ESP_LOGE(TAG, "[OTA] esp_ota_end failed");
-        return false;
-    }
-
-    if (esp_ota_set_boot_partition(update_partition) != ESP_OK)
-    {
-        ESP_LOGE(TAG, "[OTA] esp_ota_set_boot_partition failed");
-        return false;
-    }
-    ota_monitor_end_stage("ota_finalize");
-
-    ESP_LOGI(TAG, "[OTA] OTA committed. Rebooting...");
-
-    // // Reset WDT before reboot
-    // esp_task_wdt_reset();
-
-    // // Cleanup files
-    // ESP_LOGI(TAG, "[OTA] Cleaning up files...");
-    // if (remove(bin_path) == 0)
-    // {
-    //     ESP_LOGI(TAG, "[OTA] Firmware file deleted");
-    // }
-    // else
-    // {
-    //     ESP_LOGW(TAG, "[OTA] Failed to delete firmware file");
-    // }
-    // esp_task_wdt_reset();
-    // vTaskDelay(pdMS_TO_TICKS(100));
-
-    // ESP_LOGI(TAG, "[OTA] Deleting manifest file...");
-    // if (remove(MANIFEST_PATH) == 0)
-    // {
-    //     ESP_LOGI(TAG, "[OTA] Manifest file deleted");
-    // }
-    // else
-    // {
-    //     ESP_LOGW(TAG, "[OTA] Failed to delete manifest file");
-    // }
-
-    // Final WDT reset and reboot
-    esp_task_wdt_reset();
-    vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
-
-    return true;
-}
-
 /* ---------------- Main OTA function (no ZIP) ---------------- */
 static bool perform_ota_update(void)
 {
@@ -778,26 +553,203 @@ static bool perform_ota_update(void)
     ESP_LOGI(TAG, "[OTA] Update available. Proceeding...");
     ota_monitor_end_stage("parse_manifest");
 
-    // 4. Download firmware
-    ESP_LOGI(TAG, "[OTA] Downloading firmware binary...");
+    // 4. Stream firmware directly to OTA partition (NO SPIFFS)
+    ESP_LOGI(TAG, "[OTA] Streaming firmware to OTA partition...");
     ota_monitor_start_stage();
-    if (!download_file_to_spiffs(FIRMWARE_URL, FIRMWARE_PATH))
-    {
-        ESP_LOGE(TAG, "[OTA] Failed to download firmware");
-        remove(MANIFEST_PATH);
-        return false;
-    }
-    ota_monitor_end_stage("download_firmware");
+    
+    esp_http_client_config_t http_config = {
+        .url = FIRMWARE_URL,
+    #if FIRMWARE_TLS == 1
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .skip_cert_common_name_check = false,
+    #endif
+        .timeout_ms = 60000,
+        .buffer_size = 16384,
+        .buffer_size_tx = 4096
+    };
 
-    // 5. Flash firmware
-    ESP_LOGI(TAG, "[OTA] Flashing firmware...");
-    if (!flash_firmware_from_spiffs(FIRMWARE_PATH, expected_hash_hex, signature_hex))
+    esp_https_ota_config_t ota_config = {
+        .http_config = &http_config,
+    };
+
+    esp_https_ota_handle_t https_ota_handle = NULL;
+    esp_err_t err = esp_https_ota_begin(&ota_config, &https_ota_handle);
+    if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "[OTA] Failed to flash firmware");
+        ESP_LOGE(TAG, "[OTA] esp_https_ota_begin failed: %s", esp_err_to_name(err));
         remove(MANIFEST_PATH);
-        remove(FIRMWARE_PATH);
         return false;
     }
+
+    int image_size = esp_https_ota_get_image_size(https_ota_handle);
+    ESP_LOGI(TAG, "[OTA] Firmware size: %d bytes", image_size);
+
+    // Stream firmware with progress
+    int last_percent = -1;
+    int total_read = 0;
+
+    while (1)
+    {
+        err = esp_https_ota_perform(https_ota_handle);
+        if (err != ESP_ERR_HTTPS_OTA_IN_PROGRESS)
+            break;
+
+        total_read = esp_https_ota_get_image_len_read(https_ota_handle);
+        int percent = (total_read * 100) / image_size;
+        
+        if (percent != last_percent && percent % 10 == 0)
+        {
+            ESP_LOGI(TAG, "[OTA] Progress: %d%% (%d/%d)", percent, total_read, image_size);
+            last_percent = percent;
+        }
+        
+        esp_task_wdt_reset();
+    }
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "[OTA] Firmware streaming failed: %s", esp_err_to_name(err));
+        esp_https_ota_abort(https_ota_handle);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "[OTA] Download complete: %d bytes", total_read);
+    ota_monitor_end_stage("stream_firmware");
+
+    // 5. Verify hash by reading from partition
+    ota_monitor_start_stage();
+    ESP_LOGI(TAG, "[OTA] Verifying firmware hash...");
+    
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!update_partition)
+    {
+        ESP_LOGE(TAG, "[OTA] Failed to get update partition");
+        esp_https_ota_abort(https_ota_handle);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    // Calculate hash from partition
+    mbedtls_sha512_context sha_ctx;
+    mbedtls_sha512_init(&sha_ctx);
+    mbedtls_sha512_starts(&sha_ctx, 0);
+
+    const int buf_size = 8192;
+    uint8_t *buffer = malloc(buf_size);
+    if (!buffer)
+    {
+        ESP_LOGE(TAG, "[OTA] malloc failed for verification");
+        esp_https_ota_abort(https_ota_handle);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    size_t remaining = total_read;
+    size_t offset = 0;
+
+    while (remaining > 0)
+    {
+        size_t to_read = (remaining > buf_size) ? buf_size : remaining;
+        err = esp_partition_read(update_partition, offset, buffer, to_read);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "[OTA] Partition read failed: %s", esp_err_to_name(err));
+            free(buffer);
+            esp_https_ota_abort(https_ota_handle);
+            remove(MANIFEST_PATH);
+            return false;
+        }
+
+        mbedtls_sha512_update(&sha_ctx, buffer, to_read);
+        offset += to_read;
+        remaining -= to_read;
+        esp_task_wdt_reset();
+    }
+
+    free(buffer);
+
+    uint8_t calc_hash[HASH_LEN_BYTES];
+    mbedtls_sha512_finish(&sha_ctx, calc_hash);
+    mbedtls_sha512_free(&sha_ctx);
+
+    char calc_hash_hex[HASH_HEX_BUF];
+    for (int i = 0; i < HASH_LEN_BYTES; ++i)
+        sprintf(calc_hash_hex + i * 2, "%02x", calc_hash[i]);
+    calc_hash_hex[HASH_HEX_LEN] = '\0';
+
+    ESP_LOGI(TAG, "[OTA] Computed hash: %s", calc_hash_hex);
+    ESP_LOGI(TAG, "[OTA] Expected hash: %s", expected_hash_hex);
+
+    if (strcmp(calc_hash_hex, expected_hash_hex) != 0)
+    {
+        ESP_LOGE(TAG, "[OTA] Hash mismatch!");
+        esp_https_ota_abort(https_ota_handle);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+    ota_monitor_end_stage("verify_hash");
+
+    // 6. Verify signature
+    ota_monitor_start_stage();
+    uint8_t signature[SIG_BUF_LEN];
+    int sig_len = hexstr_to_bytes(signature_hex, signature, sizeof(signature));
+    if (sig_len < 0)
+    {
+        ESP_LOGE(TAG, "[OTA] Signature hex->bytes conversion failed: %d", sig_len);
+        esp_https_ota_abort(https_ota_handle);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    // verify ECDSA over the 32-byte hash
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    int ret = mbedtls_pk_parse_public_key(&pk, PUBLIC_KEY_PEM_P384, sizeof(PUBLIC_KEY_PEM_P384));
+    if (ret != 0)
+    {
+        ESP_LOGE(TAG, "[OTA] Failed to parse public key: -0x%04X", -ret);
+        esp_https_ota_abort(https_ota_handle);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "[OTA] pk type: %d", mbedtls_pk_get_type(&pk));
+    ESP_LOGI(TAG, "[OTA] Signature length: %d", sig_len);
+    ESP_LOGI(TAG, "[OTA] Hash length: %d", (int)sizeof(calc_hash));
+    // ESP_LOG_BUFFER_HEX(TAG, calc_hash, sizeof(calc_hash));
+    ret = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA384, calc_hash, 0, signature, sig_len);
+    if (ret != 0)
+    {
+        char err_buf[200];
+        mbedtls_strerror(ret, err_buf, sizeof(err_buf));
+        ESP_LOGE(TAG, "[OTA] Signature verification FAILED: -0x%04X (%d): %s", -ret, ret, err_buf);
+        esp_https_ota_abort(https_ota_handle);
+        return false;
+    }
+
+    mbedtls_pk_free(&pk);
+    ota_monitor_end_stage("verify_signature");
+
+    ESP_LOGI(TAG, "[OTA] Hash and signature verified OK");
+
+    // 7. Finalize OTA
+    ota_monitor_start_stage();
+    err = esp_https_ota_finish(https_ota_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "[OTA] esp_https_ota_finish failed: %s", esp_err_to_name(err));
+        remove(MANIFEST_PATH);
+        return false;
+    }
+    ota_monitor_end_stage("ota_finalize");
+
+    ESP_LOGI(TAG, "[OTA] OTA committed. Rebooting...");
+    
+    // Cleanup
+    esp_task_wdt_reset();
+    remove(MANIFEST_PATH);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
 
     return true;
 }
