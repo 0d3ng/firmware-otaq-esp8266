@@ -23,7 +23,7 @@ idf_build_set_property(COMPILE_DEFINITIONS "-DFIRMWARE_VERSION=\"${FIRMWARE_VERS
 # ==== Handle firmware algorithm from CI/CD ====
 if(NOT DEFINED FIRMWARE_ALGORITHM)
     # default algorithm for local builds
-    set(FIRMWARE_ALGORITHM "ED25519_1MB")
+    set(FIRMWARE_ALGORITHM "ED25519_0MB")
 endif()
 
 message(STATUS "Using firmware algorithm: ${FIRMWARE_ALGORITHM}")
