@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       padding_mb:
-        description: "Size padding on MB (0 = without padding, 1 = 1MB padding, 2 = 2MB padding, 4 = 4MB padding, etc.)"
+        description: "Size padding on MB (0 = without padding, 1 = 1MB padding, 2 = 2MB padding, 3 = 3MB padding, etc.)"
         required: true
         default: "0"
 
@@ -65,7 +65,7 @@ jobs:
           idf.py set-target esp32s3
 
           echo "=== Step 4: Build firmware ==="
-          idf.py build -D FIRMWARE_VERSION="${{ env.FIRMWARE_VERSION }}" -D FIRMWARE_ALGORITHM="${{ env.FIRMWARE_ALGORITHM }}"
+          idf.py build -D FIRMWARE_VERSION="${{ env.FIRMWARE_VERSION }}" -D FIRMWARE_ALGORITHM="${{ env.FIRMWARE_ALGORITHM }}" -D FIRMWARE_TLS=1
 
           echo "=== Step 5: copy firmware-otaq.bin ==="
           cp build/firmware-otaq-s3.bin build/firmware-otaq.bin
