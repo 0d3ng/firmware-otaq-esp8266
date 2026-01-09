@@ -25,12 +25,12 @@
 
 #if FIRMWARE_TLS == 1
 // https connections
-    #define MANIFEST_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/manifest.json"
-    #define FIRMWARE_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware-otaq.bin"
+#define MANIFEST_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/manifest.json"
+#define FIRMWARE_URL "https://ota.sinaungoding.com:8443/api/v1/firmware/firmware-otaq.bin"
 #else
 // http connections
-    #define MANIFEST_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/manifest.json"
-    #define FIRMWARE_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/firmware-otaq.bin"
+#define MANIFEST_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/manifest.json"
+#define FIRMWARE_URL "http://broker.sinaungoding.com:8000/api/v1/firmware/firmware-otaq.bin"
 #endif
 
 #define TAG "OTA_SECURE"
@@ -39,6 +39,7 @@
 
 #define MANIFEST_PATH "/spiffs/manifest.json"
 #define FIRMWARE_PATH "/spiffs/firmware-otaq.bin"
+#define OTA_BUFFER_SIZE 8192
 
 // ba89c973ffb9836d7c3c9f0b6bc869455cdb6db33aa299c297fd1726f567abd9 -> private key
 static const uint8_t PUBLIC_KEY[32] = {0x0B, 0xC1, 0x2F, 0x3D, 0x71, 0x82, 0x04, 0x68, 0x6B, 0x66, 0x90, 0x42, 0xD9, 0x21, 0xC9, 0x1D, 0xB1, 0x2F, 0x83, 0x34, 0x0E, 0x80, 0xC4, 0x83, 0x78, 0x92, 0x82, 0x80, 0x51, 0xFA, 0xFC, 0xD8};
@@ -177,12 +178,12 @@ void mount_spiffs()
         size_t total = 0, used = 0;
         esp_spiffs_info(NULL, &total, &used);
         ESP_LOGI(TAG, "SPIFFS mounted. total: %d bytes, used: %d bytes", (int)total, (int)used);
-        
+
         // Clean up old files if SPIFFS usage is high
-        if (used > (total / 2))  // If more than 50% used
+        if (used > (total / 2)) // If more than 50% used
         {
             ESP_LOGW(TAG, "SPIFFS usage high, cleaning up old files...");
-            
+
             // List all files in SPIFFS
             DIR *dir = opendir("/spiffs");
             int file_count = 0;
@@ -192,15 +193,15 @@ void mount_spiffs()
                 ESP_LOGI(TAG, "Files in SPIFFS:");
                 while ((entry = readdir(dir)) != NULL)
                 {
-                    char full_path[280];  // Increased size: 255 (max filename) + 8 ("/spiffs/") + margin
+                    char full_path[280]; // Increased size: 255 (max filename) + 8 ("/spiffs/") + margin
                     snprintf(full_path, sizeof(full_path), "/spiffs/%s", entry->d_name);
-                    
+
                     struct stat st;
                     if (stat(full_path, &st) == 0)
                     {
                         ESP_LOGI(TAG, "  - %s (%d bytes)", entry->d_name, (int)st.st_size);
                         file_count++;
-                        
+
                         // Delete all files to clean SPIFFS
                         if (remove(full_path) == 0)
                         {
@@ -210,11 +211,11 @@ void mount_spiffs()
                 }
                 closedir(dir);
             }
-            
+
             // Check usage after cleanup
             esp_spiffs_info(NULL, &total, &used);
             ESP_LOGI(TAG, "SPIFFS after cleanup: total: %d bytes, used: %d bytes, files found: %d", (int)total, (int)used, file_count);
-            
+
             // If still high usage but no files found, format SPIFFS (orphaned blocks)
             if (used > (total / 2) && file_count == 0)
             {
@@ -229,8 +230,7 @@ void mount_spiffs()
                         .base_path = "/spiffs",
                         .partition_label = NULL,
                         .max_files = 5,
-                        .format_if_mount_failed = true
-                    };
+                        .format_if_mount_failed = true};
                     esp_vfs_spiffs_register(&conf);
                     esp_spiffs_info(NULL, &total, &used);
                     ESP_LOGI(TAG, "SPIFFS after format: total: %d bytes, used: %d bytes", (int)total, (int)used);
@@ -249,12 +249,11 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
 {
     esp_http_client_config_t config = {
         .url = url,
-    #if FIRMWARE_TLS == 1
+#if FIRMWARE_TLS == 1
         .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = false,
-    #endif
-        .timeout_ms = 30000
-    };
+#endif
+        .timeout_ms = 30000};
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client)
@@ -293,8 +292,7 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
         return false;
     }
 
-    const int buf_size = 8192;
-    uint8_t *buffer = malloc(buf_size);
+    uint8_t *buffer = malloc(OTA_BUFFER_SIZE);
     if (!buffer)
     {
         ESP_LOGE(TAG, "malloc failed for http buffer");
@@ -308,7 +306,7 @@ static bool download_file_to_spiffs(const char *url, const char *dest_path)
 
     while (1)
     {
-        int read_len = esp_http_client_read(client, (char *)buffer, buf_size);
+        int read_len = esp_http_client_read(client, (char *)buffer, OTA_BUFFER_SIZE);
 
         if (read_len < 0)
         {
@@ -594,8 +592,7 @@ static bool flash_firmware_from_spiffs(const char *bin_path, const char *expecte
     mbedtls_sha256_starts(&sha_ctx, 0);
 
     // Stream file to OTA partition
-    const int buf_size = 8192;
-    uint8_t *buffer = malloc(buf_size);
+    uint8_t *buffer = malloc(OTA_BUFFER_SIZE);
     if (!buffer)
     {
         ESP_LOGE(TAG, "[OTA] malloc failed");
@@ -609,7 +606,7 @@ static bool flash_firmware_from_spiffs(const char *bin_path, const char *expecte
 
     while (1)
     {
-        size_t read_len = fread(buffer, 1, buf_size, f);
+        size_t read_len = fread(buffer, 1, OTA_BUFFER_SIZE, f);
 
         if (read_len == 0)
         {
@@ -832,24 +829,34 @@ static bool perform_ota_update(void)
     // 4. Stream firmware directly to OTA partition (NO SPIFFS)
     ESP_LOGI(TAG, "[OTA] Streaming firmware to OTA partition...");
     ota_monitor_start_stage();
+
+    int total_read = 0;
+    esp_err_t err = ESP_OK;
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
     
+    if (!update_partition)
+    {
+        ESP_LOGE(TAG, "[OTA] No update partition found");
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+#if FIRMWARE_TLS == 1
+    // HTTPS: Use esp_https_ota API
     esp_http_client_config_t http_config = {
         .url = FIRMWARE_URL,
-    #if FIRMWARE_TLS == 1
         .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = false,
-    #endif
         .timeout_ms = 60000,
         .buffer_size = 16384,
-        .buffer_size_tx = 4096
-    };
+        .buffer_size_tx = 4096};
 
     esp_https_ota_config_t ota_config = {
         .http_config = &http_config,
     };
 
     esp_https_ota_handle_t https_ota_handle = NULL;
-    esp_err_t err = esp_https_ota_begin(&ota_config, &https_ota_handle);
+    err = esp_https_ota_begin(&ota_config, &https_ota_handle);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "[OTA] esp_https_ota_begin failed: %s", esp_err_to_name(err));
@@ -860,9 +867,7 @@ static bool perform_ota_update(void)
     int image_size = esp_https_ota_get_image_size(https_ota_handle);
     ESP_LOGI(TAG, "[OTA] Firmware size: %d bytes", image_size);
 
-    // Stream firmware with progress
     int last_percent = -1;
-    int total_read = 0;
 
     while (1)
     {
@@ -872,13 +877,13 @@ static bool perform_ota_update(void)
 
         total_read = esp_https_ota_get_image_len_read(https_ota_handle);
         int percent = (total_read * 100) / image_size;
-        
+
         if (percent != last_percent && percent % 10 == 0)
         {
             ESP_LOGI(TAG, "[OTA] Progress: %d%% (%d/%d)", percent, total_read, image_size);
             last_percent = percent;
         }
-        
+
         esp_task_wdt_reset();
     }
 
@@ -891,32 +896,145 @@ static bool perform_ota_update(void)
     }
 
     ESP_LOGI(TAG, "[OTA] Download complete: %d bytes", total_read);
+
+#else
+    // HTTP: Use manual streaming with esp_http_client + esp_ota_write
+    esp_http_client_config_t http_config = {
+        .url = FIRMWARE_URL,
+        .timeout_ms = 60000};
+
+    esp_http_client_handle_t client = esp_http_client_init(&http_config);
+    if (!client)
+    {
+        ESP_LOGE(TAG, "[OTA] Failed to init HTTP client");
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    esp_http_client_set_header(client, "Accept-Encoding", "identity");
+    esp_http_client_set_header(client, "User-Agent", "ESP32-OTA");
+
+    err = esp_http_client_open(client, 0);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "[OTA] esp_http_client_open failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    int content_length = esp_http_client_fetch_headers(client);
+    int status_code = esp_http_client_get_status_code(client);
+    ESP_LOGI(TAG, "[OTA] HTTP Status=%d, Content-Length=%d", status_code, content_length);
+
+    if (status_code != 200)
+    {
+        ESP_LOGE(TAG, "[OTA] Bad HTTP status: %d", status_code);
+        esp_http_client_cleanup(client);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    esp_ota_handle_t ota_handle;
+    err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &ota_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "[OTA] esp_ota_begin failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "[OTA] Streaming to partition 0x%x", update_partition->address);
+
+    uint8_t *buffer = malloc(OTA_BUFFER_SIZE);
+    if (!buffer)
+    {
+        ESP_LOGE(TAG, "[OTA] malloc failed");
+        esp_ota_end(ota_handle);
+        esp_http_client_cleanup(client);
+        remove(MANIFEST_PATH);
+        return false;
+    }
+
+    int last_percent = -1;
+
+    while (1)
+    {
+        int read_len = esp_http_client_read(client, (char *)buffer, OTA_BUFFER_SIZE);
+
+        if (read_len < 0)
+        {
+            ESP_LOGE(TAG, "[OTA] HTTP read error");
+            free(buffer);
+            esp_ota_end(ota_handle);
+            esp_http_client_cleanup(client);
+            remove(MANIFEST_PATH);
+            return false;
+        }
+
+        if (read_len == 0)
+        {
+            ESP_LOGI(TAG, "[OTA] Download complete: %d bytes", total_read);
+            break;
+        }
+
+        err = esp_ota_write(ota_handle, buffer, read_len);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "[OTA] esp_ota_write failed: %s", esp_err_to_name(err));
+            free(buffer);
+            esp_ota_end(ota_handle);
+            esp_http_client_cleanup(client);
+            remove(MANIFEST_PATH);
+            return false;
+        }
+
+        total_read += read_len;
+        esp_task_wdt_reset();
+
+        if (content_length > 0)
+        {
+            int percent = (total_read * 100) / content_length;
+            if (percent != last_percent && percent % 10 == 0)
+            {
+                ESP_LOGI(TAG, "[OTA] Progress: %d%% (%d/%d)", percent, total_read, content_length);
+                last_percent = percent;
+            }
+        }
+    }
+
+    free(buffer);
+    esp_http_client_cleanup(client);
+
+    // End OTA
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "[OTA] esp_ota_end failed: %s", esp_err_to_name(err));
+        remove(MANIFEST_PATH);
+        return false;
+    }
+#endif
+
     ota_monitor_end_stage("stream_firmware");
 
     // 5. Verify hash by reading from partition
     ota_monitor_start_stage();
     ESP_LOGI(TAG, "[OTA] Verifying firmware hash...");
-    
-    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
-    if (!update_partition)
-    {
-        ESP_LOGE(TAG, "[OTA] Failed to get update partition");
-        esp_https_ota_abort(https_ota_handle);
-        remove(MANIFEST_PATH);
-        return false;
-    }
 
     // Calculate hash from partition
     mbedtls_sha256_context sha_ctx;
     mbedtls_sha256_init(&sha_ctx);
     mbedtls_sha256_starts(&sha_ctx, 0);
 
-    const int buf_size = 8192;
-    uint8_t *buffer = malloc(buf_size);
-    if (!buffer)
+    uint8_t *verify_buffer = malloc(OTA_BUFFER_SIZE);
+    if (!verify_buffer)
     {
         ESP_LOGE(TAG, "[OTA] malloc failed for verification");
+#if FIRMWARE_TLS == 1
         esp_https_ota_abort(https_ota_handle);
+#endif
         remove(MANIFEST_PATH);
         return false;
     }
@@ -926,24 +1044,26 @@ static bool perform_ota_update(void)
 
     while (remaining > 0)
     {
-        size_t to_read = (remaining > buf_size) ? buf_size : remaining;
-        err = esp_partition_read(update_partition, offset, buffer, to_read);
+        size_t to_read = (remaining > OTA_BUFFER_SIZE) ? OTA_BUFFER_SIZE : remaining;
+        err = esp_partition_read(update_partition, offset, verify_buffer, to_read);
         if (err != ESP_OK)
         {
             ESP_LOGE(TAG, "[OTA] Partition read failed: %s", esp_err_to_name(err));
-            free(buffer);
+            free(verify_buffer);
+#if FIRMWARE_TLS == 1
             esp_https_ota_abort(https_ota_handle);
+#endif
             remove(MANIFEST_PATH);
             return false;
         }
 
-        mbedtls_sha256_update(&sha_ctx, buffer, to_read);
+        mbedtls_sha256_update(&sha_ctx, verify_buffer, to_read);
         offset += to_read;
         remaining -= to_read;
         esp_task_wdt_reset();
     }
 
-    free(buffer);
+    free(verify_buffer);
 
     uint8_t calc_hash[32];
     mbedtls_sha256_finish(&sha_ctx, calc_hash);
@@ -960,7 +1080,9 @@ static bool perform_ota_update(void)
     if (strcmp(calc_hash_hex, expected_hash_hex) != 0)
     {
         ESP_LOGE(TAG, "[OTA] Hash mismatch!");
+#if FIRMWARE_TLS == 1
         esp_https_ota_abort(https_ota_handle);
+#endif
         remove(MANIFEST_PATH);
         return false;
     }
@@ -972,7 +1094,9 @@ static bool perform_ota_update(void)
     if (!hexstr_to_bytes(signature_hex, signature, SIG_LEN))
     {
         ESP_LOGE(TAG, "[OTA] Signature hex->bytes failed");
+#if FIRMWARE_TLS == 1
         esp_https_ota_abort(https_ota_handle);
+#endif
         remove(MANIFEST_PATH);
         return false;
     }
@@ -980,7 +1104,9 @@ static bool perform_ota_update(void)
     if (crypto_ed25519_check(signature, PUBLIC_KEY, calc_hash, 32) != 0)
     {
         ESP_LOGE(TAG, "[OTA] Signature verification FAILED");
+#if FIRMWARE_TLS == 1
         esp_https_ota_abort(https_ota_handle);
+#endif
         remove(MANIFEST_PATH);
         return false;
     }
@@ -990,6 +1116,7 @@ static bool perform_ota_update(void)
 
     // 7. Finalize OTA
     ota_monitor_start_stage();
+#if FIRMWARE_TLS == 1
     err = esp_https_ota_finish(https_ota_handle);
     if (err != ESP_OK)
     {
@@ -997,10 +1124,20 @@ static bool perform_ota_update(void)
         remove(MANIFEST_PATH);
         return false;
     }
+#else
+    // For HTTP, set boot partition manually
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "[OTA] esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
+        remove(MANIFEST_PATH);
+        return false;
+    }
+#endif
     ota_monitor_end_stage("ota_finalize");
 
     ESP_LOGI(TAG, "[OTA] OTA committed. Rebooting...");
-    
+
     // Cleanup
     esp_task_wdt_reset();
     remove(MANIFEST_PATH);
