@@ -33,7 +33,7 @@ jobs:
         run: |
           git clone --depth 1 --branch v5.5.1 https://github.com/espressif/esp-idf.git $HOME/esp-idf
           cd $HOME/esp-idf
-          ./install.sh esp32s3
+          ./install.sh esp32
 
       - name: Set firmware version info
         run: |
@@ -62,13 +62,13 @@ jobs:
           idf.py fullclean
 
           echo "=== Step 3: Set target ==="
-          idf.py set-target esp32s3
+          idf.py set-target esp32
 
           echo "=== Step 4: Build firmware ==="
           idf.py build -D FIRMWARE_VERSION="${{ env.FIRMWARE_VERSION }}" -D FIRMWARE_ALGORITHM="${{ env.FIRMWARE_ALGORITHM }}" -D FIRMWARE_TLS=1
 
           echo "=== Step 5: copy firmware-otaq.bin ==="
-          cp build/firmware-otaq-s3.bin build/firmware-otaq.bin
+          cp build/firmware-otaq-esp32.bin build/firmware-otaq.bin
       
       - name: Apply firmware padding
         run: |
