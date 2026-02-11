@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 idf_build_set_property(MINIMAL_BUILD ON)
-project(firmware-otaq-s3)
+project(firmware-otaq-esp32)
 set(EXTRA_COMPONENT_DIRS components)
 
 # ==== Handle firmware version from CI/CD ====
