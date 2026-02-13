@@ -1,6 +1,9 @@
 name: ESP-IDF Build & Secure OTA (ED25519)
 
 on:
+  push:
+    branches:
+      - master
   workflow_dispatch:
     inputs:
       padding_mb:
@@ -10,7 +13,6 @@ on:
 
 jobs:
   build-ota:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: firmware env
 
